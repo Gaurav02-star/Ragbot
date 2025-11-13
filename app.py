@@ -48,7 +48,7 @@ OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
 AMADEUS_CLIENT_ID = st.secrets["AMADEUS_CLIENT_ID"]
 AMADEUS_CLIENT_SECRET = st.secrets["AMADEUS_CLIENT_SECRET"]
 
-# Keep env variables for libs that expect them
+# Keep env variables for libraries that expect them
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
 
@@ -57,7 +57,7 @@ os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
 # -------------------------
 PERSIST_DIR = "./chroma_db"  # ensure write access in deployment
 EMBEDDING_MODEL_NAME = "models/text-embedding-004"
-CHAT_MODEL_NAME = "gemini-2.0"
+CHAT_MODEL_NAME = "gemini-pro"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
@@ -105,9 +105,6 @@ def requests_post_with_retries(url, data=None, json_body=None, headers=None, ret
 # Amadeus: token management
 # -------------------------
 def get_amadeus_token(force_refresh: bool = False) -> str:
-    """
-    Obtain an OAuth token from Amadeus (client credentials). Cache until near expiry.
-    """
     now = int(time.time())
     token = _amadeus_token_cache.get("access_token")
     expires_at = _amadeus_token_cache.get("expires_at", 0)
@@ -115,7 +112,6 @@ def get_amadeus_token(force_refresh: bool = False) -> str:
     if token and not force_refresh and now < expires_at - 10:
         return token
 
-    # Request a new token
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
         "grant_type": "client_credentials",
@@ -126,7 +122,7 @@ def get_amadeus_token(force_refresh: bool = False) -> str:
         resp = requests_post_with_retries(AMADEUS_OAUTH_URL, data=data, headers=headers, timeout=10)
         js = resp.json()
         access_token = js.get("access_token")
-        expires_in = js.get("expires_in", 0)  # seconds
+        expires_in = js.get("expires_in", 0)
         if not access_token:
             logger.error("Amadeus token response: %s", js)
             raise RuntimeError("Failed to obtain Amadeus access token.")
@@ -142,21 +138,15 @@ def get_amadeus_token(force_refresh: bool = False) -> str:
 # Amadeus: flight search helper
 # -------------------------
 def amadeus_flight_search(origin: str, destination: str, date_from: str, date_to: Optional[str] = None, adults: int = 1, max_results: int = 5) -> List[dict]:
-    """
-    Search Amadeus Flight Offers. If date_to provided and different, this will iterate across the date range
-    (bounded to a small number of days) and collect top offers per day.
-    - date_from and date_to are 'YYYY-MM-DD' strings.
-    """
     token = get_amadeus_token()
     headers = {"Authorization": f"Bearer {token}"}
 
     offers = []
-    # if user provided a date range, iterate up to 5 days to limit calls
     if date_to:
         d1 = datetime.fromisoformat(date_from).date()
         d2 = datetime.fromisoformat(date_to).date()
         days = (d2 - d1).days + 1
-        days = min(max(days, 1), 5)  # limit to 5 days to avoid excessive calls
+        days = min(max(days, 1), 5)
         dates = [(d1 + timedelta(days=i)).isoformat() for i in range(days)]
     else:
         dates = [date_from]
@@ -173,15 +163,12 @@ def amadeus_flight_search(origin: str, destination: str, date_from: str, date_to
             resp = requests_get_with_retries(AMADEUS_FLIGHT_OFFERS_URL, params=params, headers=headers, timeout=12)
             data = resp.json()
             day_offers = data.get("data", [])
-            # attach date info and raw meta
             for o in day_offers:
                 o["_search_date"] = dt
             offers.extend(day_offers)
-            # break early if we already have enough offers
             if len(offers) >= max_results:
                 break
         except requests.HTTPError as he:
-            # If 401/403 (token expired/invalid), try refresh token once
             status = getattr(he.response, "status_code", None)
             if status in (401, 403):
                 logger.info("Amadeus token maybe expired; refreshing token and retrying once.")
@@ -201,7 +188,6 @@ def amadeus_flight_search(origin: str, destination: str, date_from: str, date_to
         except Exception as e:
             logger.exception("Amadeus flight search failed: %s", e)
 
-    # return at most max_results offers
     return offers[:max_results]
 
 # -------------------------
@@ -239,16 +225,61 @@ def web_search_tool(query: str) -> str:
         logger.exception("Web search failed: %s", e)
         return f"Web search error: {e}"
 
+# -------------------------
+# Tool: Flight Search
+# -------------------------
+def flight_search_tool(input_str: str) -> str:
+    """Search for flights. Input format: 'ORIGIN,DEST,DATE_FROM,DATE_TO,ADULTS' or 'ORIGIN,DEST,DATE,ADULTS'"""
+    try:
+        parts = [p.strip() for p in input_str.split(",")]
+        if len(parts) == 4:
+            origin, destination, date_from, adults = parts
+            date_to = None
+        elif len(parts) == 5:
+            origin, destination, date_from, date_to, adults = parts
+        else:
+            return "Invalid format. Use: ORIGIN,DEST,DATE_FROM,DATE_TO,ADULTS or ORIGIN,DEST,DATE,ADULTS"
+        
+        offers = amadeus_flight_search(
+            origin=origin,
+            destination=destination,
+            date_from=date_from,
+            date_to=date_to,
+            adults=int(adults),
+            max_results=3
+        )
+        
+        if not offers:
+            return f"No flights found from {origin} to {destination}"
+        
+        results = []
+        for i, o in enumerate(offers[:3], 1):
+            price = (o.get("price") or {}).get("grandTotal", "N/A")
+            date = o.get("_search_date", "N/A")
+            results.append(f"Flight {i}: {origin}→{destination} on {date}, Price: {price}")
+        
+        return "\n".join(results)
+    except Exception as e:
+        logger.exception("Flight search tool error: %s", e)
+        return f"Flight search error: {e}"
+
 # Wrap tools for LangChain Agent
 web_tool = Tool(
     name="web_search",
     func=web_search_tool,
     description="Search the web for travel information. Input should be a query string."
 )
+
 weather_tool_wrapped = Tool(
     name="weather",
     func=weather_tool,
     description="Return weather for a city. Input is a city name."
+)
+
+flight_tool = Tool(
+    name="flight_search",
+    func=flight_search_tool,
+    description="Search for flights. Input format: 'ORIGIN,DEST,DATE_FROM,DATE_TO,ADULTS' or 'ORIGIN,DEST,DATE,ADULTS'. Example: 'DEL,BLR,2024-01-15,2024-01-20,2'"
 )
 
 # -------------------------
@@ -257,20 +288,34 @@ weather_tool_wrapped = Tool(
 def build_or_load_vectorstore_from_chunks(chunks: List[str]):
     try:
         embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+        
+        # Check if ChromaDB exists and has collections
         if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
-            logger.info("Loading existing Chroma vectorstore from %s", PERSIST_DIR)
-            vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
-        else:
-            logger.info("Creating new Chroma vectorstore at %s", PERSIST_DIR)
-            vectorstore = Chroma.from_texts(texts=chunks, embedding=embedding_model, persist_directory=PERSIST_DIR)
             try:
-                vectorstore.persist()
-            except Exception as e:
-                logger.warning("Chroma persist() failed: %s", e)
+                logger.info("Loading existing Chroma vectorstore from %s", PERSIST_DIR)
+                vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
+                # Test if it works by trying a simple search
+                if chunks:  # Only test if we have chunks to compare
+                    vectorstore.similarity_search(chunks[0][:50], k=1)
+                return vectorstore
+            except Exception as load_error:
+                logger.warning("Failed to load existing ChromaDB, creating new: %s", load_error)
+                # Fall through to create new
+                
+        logger.info("Creating new Chroma vectorstore at %s", PERSIST_DIR)
+        vectorstore = Chroma.from_texts(
+            texts=chunks, 
+            embedding=embedding_model, 
+            persist_directory=PERSIST_DIR
+        )
         return vectorstore
+        
     except Exception as e:
         logger.exception("Failed to build/load vectorstore: %s", e)
-        raise
+        # Fallback: create in-memory vectorstore
+        st.warning("Using in-memory vectorstore (changes won't persist)")
+        from langchain_community.vectorstores import Chroma
+        return Chroma.from_texts(texts=chunks, embedding=embedding_model)
 
 # -------------------------
 # Small helper: split text into chunks with metadata
@@ -289,13 +334,30 @@ def split_text_with_meta(text: str):
 # LangChain LLM helper (Gemini chat wrapper)
 # -------------------------
 def create_chat_llm(temperature=0.3):
-    return ChatGoogleGenerativeAI(model=CHAT_MODEL_NAME, temperature=temperature)
+    return ChatGoogleGenerativeAI(
+        model=CHAT_MODEL_NAME, 
+        temperature=temperature,
+        max_retries=2
+    )
 
 # -------------------------
 # SQLite DB helpers
 # -------------------------
+def get_db_connection():
+    """Get database connection with error handling"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")  # Better for concurrent access
+        return conn
+    except Exception as e:
+        logger.error("Failed to connect to database: %s", e)
+        return None
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = get_db_connection()
+    if conn is None:
+        return None
+        
     cur = conn.cursor()
     cur.execute("""
     CREATE TABLE IF NOT EXISTS searches (
@@ -310,13 +372,41 @@ def init_db():
     return conn
 
 def save_search(conn, query_text: str, mode: str, result_snippet: str):
+    if conn is None:
+        return
     cur = conn.cursor()
     cur.execute("INSERT INTO searches (query_text, mode, timestamp, result_snippet) VALUES (?, ?, ?, ?)",
-                (query_text, mode, datetime.utcnow().isoformat(), result_snippet[:1000]))
+                (query_text, mode, datetime.utcnow().isoformat(), (result_snippet or "")[:1000]))
     conn.commit()
+
+def safe_save_search(query_text: str, mode: str, result_snippet: str):
+    """Safely save search with connection error handling"""
+    if conn is None:
+        return
+    try:
+        save_search(conn, query_text, mode, result_snippet)
+    except Exception as e:
+        logger.warning("Failed to save search to database: %s", e)
 
 # Initialize DB connection
 conn = init_db()
+if conn is None:
+    st.warning("Database connection failed - search history will not be saved")
+
+# -------------------------
+# Cleanup function for uploaded files
+# -------------------------
+def cleanup_uploaded_files():
+    """Clean up any uploaded files"""
+    try:
+        for filename in os.listdir("."):
+            if filename.endswith(".pdf") and os.path.isfile(filename):
+                os.remove(filename)
+    except Exception as e:
+        logger.warning("Error cleaning up files: %s", e)
+
+# Clean up at start
+cleanup_uploaded_files()
 
 # -------------------------
 # Itinerary generator (basic)
@@ -369,16 +459,193 @@ option = st.radio(
 )
 
 # -------------------------
-# RAG / Web / Weather / Agent / Itinerary / DB flows
-# (these are similar to your earlier flows, left largely unchanged)
+# CASE: RAG flow (PDF upload)
 # -------------------------
-# (Omitted here for brevity in this code snippet comment block — include the previous RAG/web/weather/agent/itinerary DB cases
-# exactly as in your previous app, replacing the Flight search case below)
-# For the full file, these blocks are present (they are identical to your previous app)...
+if option == "Ask using a travel document":
+    st.subheader("📄 Ask using a travel document (PDF)")
+    uploaded_pdf = st.file_uploader("📄 Upload your travel PDF", type=["pdf"])
+    if uploaded_pdf:
+        try:
+            pdf_path = os.path.join(".", uploaded_pdf.name)
+            with open(pdf_path, "wb") as f:
+                f.write(uploaded_pdf.read())
+            st.success(f"✅ Uploaded: {uploaded_pdf.name}")
+
+            text = ""
+            with pdfplumber.open(pdf_path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    try:
+                        page_text = page.extract_text() or ""
+                        text += page_text
+                        if i == 0 and not page_text.strip():
+                            st.warning("First page appears to have no text. This might be a scanned PDF.")
+                    except Exception as page_error:
+                        logger.warning("Error extracting text from page %d: %s", i, page_error)
+                        continue
+            
+            if not text.strip():
+                st.error("❌ No text could be extracted from the PDF. It might be scanned or image-based.")
+                # Clean up the uploaded file
+                try:
+                    os.remove(pdf_path)
+                except:
+                    pass
+                st.stop()
+
+            chunks = split_text_with_meta(text)
+            try:
+                with st.spinner("Embedding document and building vectorstore..."):
+                    vectorstore = build_or_load_vectorstore_from_chunks(chunks)
+            except Exception as e:
+                st.error(f"❌ Embedding / vectorstore error: {e}")
+                st.stop()
+
+            st.subheader("💬 Ask something about your document")
+            user_query = st.text_input("Enter your question here:")
+            if st.button("Get Answer"):
+                if not user_query.strip():
+                    st.warning("Please type a question.")
+                else:
+                    try:
+                        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                        relevant_docs = retriever.get_relevant_documents(user_query)
+                        if not relevant_docs:
+                            st.info("📭 No relevant chunks found in PDF. Falling back to web search.")
+                            web_results = web_search_tool(user_query)
+                            llm = create_chat_llm(temperature=0.5)
+                            prompt = f"""
+You are a travel assistant. Summarize the following search results into a clear, friendly, and useful answer.
+Search Results:
+{web_results}
+
+Question: {user_query}
+
+Answer (be concise and helpful):
+"""
+                            response = llm.invoke(prompt)
+                            final = response.content if hasattr(response, "content") else str(response)
+                            st.markdown("### 🌐 Web Search Answer")
+                            st.write(final)
+                            safe_save_search(user_query, "rag_fallback_web", final)
+                        else:
+                            context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
+                            prompt = f"""
+You are a travel assistant. Use ONLY the provided context. For any fact you state, append a short citation like (source: Chunk 2).
+If the answer cannot be found in the context, say "I cannot answer this based on the provided context."
+
+Context:
+{context}
+
+Question: {user_query}
+
+Answer:
+"""
+                            llm = create_chat_llm(temperature=0.3)
+                            response = llm.invoke(prompt)
+                            final = response.content if hasattr(response, "content") else str(response)
+                            st.markdown("### 🧭 Answer from PDF (with provenance)")
+                            st.write(final)
+                            safe_save_search(user_query, "rag_doc", final)
+
+                            with st.expander("📘 View retrieved document chunks"):
+                                for i, doc in enumerate(relevant_docs):
+                                    st.markdown(f"**Chunk {i+1}:**")
+                                    st.write(doc.page_content)
+                    except Exception as e:
+                        logger.exception("RAG query failed: %s", e)
+                        st.error(f"❌ Query processing error: {e}")
+        except Exception as e:
+            logger.exception("PDF processing failed: %s", e)
+            st.error(f"❌ PDF processing error: {e}")
+
+# -------------------------
+# CASE: Web search only
+# -------------------------
+elif option == "Search travel info on web":
+    st.subheader("🌐 Search travel info on web")
+    user_query = st.text_input("Where would you like to go or what do you want to know?")
+    if st.button("Search"):
+        if not user_query.strip():
+            st.warning("Please enter a travel query.")
+        else:
+            try:
+                st.info("🔍 Searching the web...")
+                web_results = web_search_tool(user_query)
+                llm = create_chat_llm(temperature=0.5)
+                prompt = f"""
+You are a travel assistant. Summarize the following search results into a concise, friendly, and informative answer for a traveler.
+
+Search Results:
+{web_results}
+
+Question: {user_query}
+
+Answer:
+"""
+                response = llm.invoke(prompt)
+                final = response.content if hasattr(response, "content") else str(response)
+                st.markdown("### 🧭 Travel Insights:")
+                st.write(final)
+                safe_save_search(user_query, "web_search", final)
+            except Exception as e:
+                logger.exception("Web search error: %s", e)
+                st.error(f"❌ Web search error: {e}")
+
+# -------------------------
+# CASE: Weather only
+# -------------------------
+elif option == "Check weather in a city":
+    st.subheader("🌤 Check weather in a city")
+
+    city = st.text_input("Enter city name:", key="weather_city")
+    if st.button("Get Weather", key="get_weather_btn"):
+        if not city or not city.strip():
+            st.warning("Please enter a city name.")
+        else:
+            try:
+                result = weather_tool(city.strip())
+                if isinstance(result, str) and result.lower().startswith("city not found"):
+                    st.error(result)
+                else:
+                    st.markdown(f"### 🌤 Weather in **{city.title()}**")
+                    st.write(result)
+                    safe_save_search(city, "weather", result)
+            except Exception as e:
+                logger.exception("Weather fetch failed: %s", e)
+                st.error(f"❌ Error fetching weather: {e}")
+
+# -------------------------
+# CASE: Agent (combined tools)
+# -------------------------
+elif option == "Agent (combined tools)":
+    st.subheader("🤖 Agent (uses web search + weather + flight tools)")
+    agent_query = st.text_input("Ask the agent anything (e.g., 'Weather in Tokyo and top attractions')")
+    if st.button("Run Agent"):
+        if not agent_query.strip():
+            st.warning("Please enter a query.")
+        else:
+            try:
+                st.info("⚙️ Running agent...")
+                llm = create_chat_llm(temperature=0.3)
+                agent = initialize_agent(
+                    [web_tool, weather_tool_wrapped, flight_tool],
+                    llm, 
+                    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, 
+                    verbose=False,
+                    handle_parsing_errors=True
+                )
+                result = agent.run(agent_query)
+                st.markdown("### 🤖 Agent Result")
+                st.write(result)
+                safe_save_search(agent_query, "agent", result)
+            except Exception as e:
+                logger.exception("Agent run failed: %s", e)
+                st.error(f"Agent error: {e}")
+
 # -------------------------
 # CASE: Flight search (Amadeus)
 # -------------------------
-if option == "Flight search (Amadeus)":
+elif option == "Flight search (Amadeus)":
     st.subheader("✈️ Flight search (Amadeus Flight Offers)")
     st.markdown("Enter origin/destination IATA or city code and a date or date range. This uses Amadeus Self-Service test environment.")
     col1, col2 = st.columns(2)
@@ -393,50 +660,113 @@ if option == "Flight search (Amadeus)":
         date_to = st.date_input("Latest departure", value=(datetime.utcnow().date() + timedelta(days=3)))
     adults = st.number_input("Adults", min_value=1, value=1)
     max_results = st.number_input("Max results", min_value=1, value=5)
+    
     if st.button("Search Flights (Amadeus)"):
-        try:
-            st.info("Searching Amadeus (may use multiple dates within the range)...")
-            offers = amadeus_flight_search(
-                origin=origin.strip(),
-                destination=dest.strip(),
-                date_from=date_from.isoformat(),
-                date_to=date_to.isoformat() if date_to else None,
-                adults=int(adults),
-                max_results=int(max_results)
-            )
-            if not offers:
-                st.info("No offers found for the given parameters.")
-                save_search(conn, f"flights: {origin}->{dest} ({date_from}..{date_to})", "amadeus_flights", "no results")
-            else:
-                for i, o in enumerate(offers):
-                    price = None
-                    if isinstance(o, dict):
-                        # Amadeus offers have price info under 'price' or 'offerItems' fields depending on version
-                        price = o.get("price", {}).get("grandTotal") or o.get("price", {}).get("total") if o.get("price") else None
-                    # fallback snippet building
-                    snippet = json.dumps(o, default=str)[:800]
-                    dep_date = o.get("_search_date", "N/A")
-                    st.markdown(f"**Offer {i+1}** — Date: {dep_date} — Price: {price if price else 'N/A'}")
-                    # show a few details if present
-                    try:
-                        # look into itineraries -> segments for readable times
-                        itineraries = o.get("itineraries", [])
-                        for itin in itineraries:
-                            st.write("Itinerary:")
-                            for seg in itin.get("segments", [])[:2]:
-                                st.write(f"- {seg.get('departure',{}).get('iataCode','?')} {seg.get('departure',{}).get('at','?')} → {seg.get('arrival',{}).get('iataCode','?')} {seg.get('arrival',{}).get('at','?')}")
-                    except Exception:
-                        pass
-                    st.write("Raw (truncated):")
-                    st.code(snippet)
-                    st.write("---")
-                save_search(conn, f"flights: {origin}->{dest}", "amadeus_flights", json.dumps(offers[0], default=str))
-        except Exception as e:
-            logger.exception("Amadeus flight search error: %s", e)
-            st.error(f"Flight search error: {e}")
+        # Add validation
+        if not origin.strip() or not dest.strip():
+            st.error("Please enter both origin and destination")
+        elif date_to < date_from:
+            st.error("End date cannot be before start date")
+        elif (date_to - date_from).days > 30:
+            st.error("Date range cannot exceed 30 days")
+        else:
+            try:
+                st.info("Searching Amadeus (may use multiple dates within the range)...")
+                offers = amadeus_flight_search(
+                    origin=origin.strip(),
+                    destination=dest.strip(),
+                    date_from=date_from.isoformat(),
+                    date_to=date_to.isoformat() if date_to else None,
+                    adults=int(adults),
+                    max_results=int(max_results)
+                )
+                if not offers:
+                    st.info("No offers found for the given parameters.")
+                    safe_save_search(f"flights: {origin}->{dest} ({date_from}..{date_to})", "amadeus_flights", "no results")
+                else:
+                    for i, o in enumerate(offers):
+                        try:
+                            # Safe price extraction
+                            price = None
+                            price_info = o.get("price") or {}
+                            price = price_info.get("grandTotal") or price_info.get("total") or price_info.get("totalPrice")
+                            dep_date = o.get("_search_date", "N/A")
+                            price_text = price if price else "N/A"
+                            st.markdown(f"**Offer {i+1}** — Date: {dep_date} — Price: {price_text}")
+
+                            # Itineraries and segments (tolerant to shape differences)
+                            itineraries = o.get("itineraries", []) or o.get("offerItems", []) or []
+                            if isinstance(itineraries, dict):
+                                itineraries = [itineraries]
+
+                            if itineraries:
+                                st.write("Itineraries:")
+                                for itin in itineraries:
+                                    segments = itin.get("segments", []) or itin.get("slice", []) or []
+                                    for seg in segments[:4]:
+                                        # segment shapes differ between versions; be defensive
+                                        dep = seg.get("departure", {}) if isinstance(seg, dict) else {}
+                                        arr = seg.get("arrival", {}) if isinstance(seg, dict) else {}
+                                        dep_code = dep.get("iataCode", "?")
+                                        dep_time = dep.get("at", "?")
+                                        arr_code = arr.get("iataCode", "?")
+                                        arr_time = arr.get("at", "?")
+                                        st.write(f"- {dep_code} {dep_time} → {arr_code} {arr_time}")
+
+                            st.write("Raw (truncated):")
+                            snippet = json.dumps(o, default=str)[:800]
+                            st.code(snippet)
+                            st.write("---")
+                        except Exception as e_inner:
+                            st.error(f"Error rendering offer {i+1}: {e_inner}")
+                            logger.exception("Error rendering offer %d: %s", i+1, e_inner)
+
+                    # save a snippet of the first result
+                    safe_save_search(f"flights: {origin}->{dest}", "amadeus_flights", json.dumps(offers[0], default=str))
+
+            except Exception as e:
+                logger.exception("Amadeus flight search error: %s", e)
+                st.error(f"Flight search error: {e}")
 
 # -------------------------
-# For complete file: include your other radio branches
-# (RAG, Web search, Weather, Agent, Itinerary, View DB)
-# The above Flight search branch integrates Amadeus and replaces the Tequila block.
+# CASE: Generate itinerary
 # -------------------------
+elif option == "Generate itinerary":
+    st.subheader("🗺️ Basic Itinerary Generator")
+    dest = st.text_input("Destination (city):", value="Rome")
+    days = st.number_input("Days", value=3, min_value=1, max_value=14)
+    if st.button("Create itinerary"):
+        try:
+            it = generate_basic_itinerary(dest, int(days))
+            st.markdown(it)
+            safe_save_search(f"itinerary: {dest} x {days}", "itinerary", it)
+        except Exception as e:
+            logger.exception("Itinerary failed: %s", e)
+            st.error(f"❌ Itinerary error: {e}")
+
+# -------------------------
+# CASE: View saved searches (DB)
+# -------------------------
+elif option == "View saved searches (DB)":
+    st.subheader("📚 Saved searches (SQLite)")
+    if conn is None:
+        st.error("Database not available")
+    else:
+        cur = conn.cursor()
+        cur.execute("SELECT id, query_text, mode, timestamp FROM searches ORDER BY id DESC LIMIT 100")
+        rows = cur.fetchall()
+        if not rows:
+            st.info("No saved searches yet.")
+        else:
+            for r in rows:
+                sid, q, mode, ts = r
+                with st.expander(f"[{sid}] {mode} • {q} • {ts}"):
+                    cur.execute("SELECT result_snippet FROM searches WHERE id=?", (sid,))
+                    snippet = cur.fetchone()
+                    st.write(snippet[0] if snippet else "")
+                    if st.button(f"Delete {sid}", key=f"del_{sid}"):
+                        cur.execute("DELETE FROM searches WHERE id=?", (sid,))
+                        conn.commit()
+                        st.experimental_rerun()
+
+# End of file
