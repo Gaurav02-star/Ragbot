@@ -42,17 +42,15 @@ GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
 
 # Keep env variables for libraries that expect them
-os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-os.environ["GEMINI_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-os.environ["CHAT_MODEL_NAME"] = st.secrets.get("CHAT_MODEL_NAME", "models/gemini-1.5-flash")
-
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
 
 # -------------------------
 # Constants / Persistence
 # -------------------------
 PERSIST_DIR = "./chroma_db"  # ensure this path is writeable in your deployment
-EMBEDDING_MODEL_NAME = "models/text-embedding-004"
-CHAT_MODEL_NAME = "gemini-2.0"  # adapt to available model in your account
+EMBEDDING_MODEL_NAME = "models/embedding-001"  # Updated to standard embedding model
+CHAT_MODEL_NAME = "gemini-pro"  # Using Gemini Pro model
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
@@ -162,40 +160,21 @@ def split_text_with_meta(text: str):
 # -------------------------
 # LangChain LLM helper (Gemini chat wrapper)
 # -------------------------
-# Replace your old create_chat_llm with this safer version
-def create_chat_llm(temperature: float = 0.3, candidates: list | None = None):
+def create_chat_llm(temperature: float = 0.3):
     """
-    Try model names in order until one instantiates successfully.
-    Uses CHAT_MODEL_NAME from env/secrets as the first candidate.
-    Returns a ChatGoogleGenerativeAI instance or raises a clear error.
+    Create a ChatGoogleGenerativeAI instance with Gemini Pro model.
     """
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    # pick candidates: prefer user-provided secret, then sensible fallbacks
-    if candidates is None:
-        candidates = [
-            os.environ.get("CHAT_MODEL_NAME", ""),   # set this from Streamlit secrets
-            "models/gemini-1.5-flash",
-            "models/gemini-1.5-pro",
-            "models/gemini-1.5",
-            "models/gemini-2.0-flash",
-            "models/chat-bison-001",  # fallback older models if available
-        ]
-
-    last_err = None
-    for model in [m for m in candidates if m]:
-        try:
-            logger.info("Attempting to create Chat LLM with model: %s", model)
-            llm = ChatGoogleGenerativeAI(model=model, temperature=temperature)
-            # Optional quick smoke test: instantiate only (do not call API here)
-            return llm
-        except Exception as e:
-            logger.warning("Model %s initialization failed: %s", model, e)
-            last_err = e
-            continue
-
-    raise RuntimeError(f"No usable chat model found. Last error: {last_err}")
-
+    try:
+        logger.info("Creating Chat LLM with model: %s", CHAT_MODEL_NAME)
+        llm = ChatGoogleGenerativeAI(
+            model=CHAT_MODEL_NAME, 
+            temperature=temperature,
+            google_api_key=GOOGLE_API_KEY
+        )
+        return llm
+    except Exception as e:
+        logger.exception("Failed to create Chat LLM: %s", e)
+        raise RuntimeError(f"Failed to initialize Gemini Pro model: {e}")
 
 # -------------------------
 # Streamlit: Choose mode
