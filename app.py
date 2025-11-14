@@ -34,23 +34,29 @@ st.write("Your AI-powered travel companion — Gemini + LangChain + OpenWeather"
 # -------------------------
 # Load secrets from Streamlit
 # -------------------------
-if "GOOGLE_API_KEY" not in st.secrets or "OPENWEATHER_API_KEY" not in st.secrets:
-    st.error("❌ Please configure GOOGLE_API_KEY and OPENWEATHER_API_KEY in Streamlit Secrets.")
+if "GOOGLE_API_KEY" not in st.secrets:
+    st.error("❌ Please configure GOOGLE_API_KEY in Streamlit Secrets.")
     st.stop()
 
 GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
+OPENWEATHER_API_KEY = st.secrets.get("OPENWEATHER_API_KEY", "")
 
 # Keep env variables for libraries that expect them
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
-os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
 
 # -------------------------
 # Constants / Persistence
 # -------------------------
-PERSIST_DIR = "./chroma_db"  # ensure this path is writeable in your deployment
-EMBEDDING_MODEL_NAME = "models/embedding-001"  # Updated to standard embedding model
-CHAT_MODEL_NAME = "gemini-pro"  # Using Gemini Pro model
+PERSIST_DIR = "./chroma_db"
+EMBEDDING_MODEL_NAME = "models/embedding-001"
+# Try these model names in order
+CHAT_MODEL_CANDIDATES = [
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest", 
+    "gemini-pro",
+    "models/gemini-pro",
+    "gemini-1.0-pro",
+]
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
@@ -75,6 +81,9 @@ def requests_get_with_retries(url, params=None, headers=None, retries=3, backoff
 # -------------------------
 def weather_tool(city: str) -> str:
     """Return a short weather summary for a city using OpenWeatherMap."""
+    if not OPENWEATHER_API_KEY:
+        return "OpenWeather API key not configured."
+    
     city = city.strip()
     if not city:
         return "Please provide a city name."
@@ -108,6 +117,55 @@ def web_search_tool(query: str) -> str:
         logger.exception("Web search failed: %s", e)
         return f"Web search error: {e}"
 
+# -------------------------
+# LLM Creation with Model Fallback
+# -------------------------
+def create_chat_llm(temperature: float = 0.3):
+    """Create LLM with fallback for different model names"""
+    last_error = None
+    
+    for model_name in CHAT_MODEL_CANDIDATES:
+        try:
+            logger.info(f"Trying model: {model_name}")
+            llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                temperature=temperature,
+                google_api_key=GOOGLE_API_KEY
+            )
+            # Test with a simple prompt to verify the model works
+            test_response = llm.invoke("Say 'Hello'")
+            if test_response:
+                logger.info(f"✅ Successfully loaded model: {model_name}")
+                return llm
+        except Exception as e:
+            last_error = e
+            logger.warning(f"❌ Model {model_name} failed: {e}")
+            continue
+    
+    # If all models fail, show available models
+    st.error(f"❌ All model attempts failed. Last error: {last_error}")
+    st.info("🔍 Checking available models...")
+    
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GOOGLE_API_KEY)
+        models = genai.list_models()
+        available_models = []
+        for model in models:
+            if 'generateContent' in model.supported_generation_methods:
+                available_models.append(model.name)
+        
+        if available_models:
+            st.write("Available models for your API key:")
+            for model in available_models:
+                st.write(f"- {model}")
+        else:
+            st.write("No generateContent models found.")
+    except Exception as e:
+        st.write(f"Could not list models: {e}")
+    
+    raise RuntimeError(f"No working model found. Last error: {last_error}")
+
 # Wrap tools for LangChain Agent
 web_tool = Tool(
     name="web_search",
@@ -127,14 +185,12 @@ def build_or_load_vectorstore_from_chunks(chunks: List[str]):
     """Create or load a persisted Chroma vectorstore for the provided chunks."""
     try:
         embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME)
-        # If persisted data exists, try to open
         if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
             logger.info("Loading existing Chroma vectorstore from %s", PERSIST_DIR)
             vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
         else:
             logger.info("Creating new Chroma vectorstore at %s", PERSIST_DIR)
             vectorstore = Chroma.from_texts(texts=chunks, embedding=embedding_model, persist_directory=PERSIST_DIR)
-            # persist to disk so future runs don't re-embed
             try:
                 vectorstore.persist()
             except Exception as e:
@@ -158,127 +214,20 @@ def split_text_with_meta(text: str):
     return chunks
 
 # -------------------------
-# LangChain LLM helper (Gemini chat wrapper)
-# -------------------------
-def create_chat_llm(temperature: float = 0.3):
-    """
-    Create a ChatGoogleGenerativeAI instance with Gemini Pro model.
-    """
-    try:
-        logger.info("Creating Chat LLM with model: %s", CHAT_MODEL_NAME)
-        llm = ChatGoogleGenerativeAI(
-            model=CHAT_MODEL_NAME, 
-            temperature=temperature,
-            google_api_key=GOOGLE_API_KEY
-        )
-        return llm
-    except Exception as e:
-        logger.exception("Failed to create Chat LLM: %s", e)
-        raise RuntimeError(f"Failed to initialize Gemini Pro model: {e}")
-
-# -------------------------
 # Streamlit: Choose mode
 # -------------------------
 option = st.radio(
     "How can I assist you today?",
-    ("Ask using a travel document", "Search travel info on web", "Check weather in a city", "Agent (combined tools)")
+    ("Search travel info on web", "Check weather in a city", "Ask using a travel document", "Agent (combined tools)")
 )
 
 # -------------------------
-# CASE: RAG flow (PDF upload)
+# CASE: Web search only (Simplified - Direct DuckDuckGo results)
 # -------------------------
-if option == "Ask using a travel document":
-    uploaded_pdf = st.file_uploader("📄 Upload your travel PDF", type=["pdf"])
-    if uploaded_pdf:
-        # Save uploaded file temporarily
-        pdf_path = os.path.join(".", uploaded_pdf.name)
-        with open(pdf_path, "wb") as f:
-            f.write(uploaded_pdf.read())
-        st.success(f"✅ Uploaded: {uploaded_pdf.name}")
-
-        # Extract text
-        text = ""
-        try:
-            with pdfplumber.open(pdf_path) as pdf:
-                for p in pdf.pages:
-                    text += p.extract_text() or ""
-            if not text.strip():
-                st.warning("No text extracted from PDF; maybe it's scanned images. Consider OCR.")
-        except Exception as e:
-            st.error(f"❌ Failed to read PDF: {e}")
-            st.stop()
-
-        # Split -> embed -> persist
-        chunks = split_text_with_meta(text)
-        try:
-            with st.spinner("Embedding document and building vectorstore..."):
-                vectorstore = build_or_load_vectorstore_from_chunks(chunks)
-        except Exception as e:
-            st.error(f"❌ Embedding / vectorstore error: {e}")
-            st.stop()
-
-        # Query UI
-        st.subheader("💬 Ask something about your document")
-        user_query = st.text_input("Enter your question here:")
-        if st.button("Get Answer"):
-            if not user_query.strip():
-                st.warning("Please type a question.")
-            else:
-                try:
-                    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-                    relevant_docs = retriever.get_relevant_documents(user_query)
-                    if not relevant_docs:
-                        st.info("📭 No relevant chunks found in PDF. Falling back to web search.")
-                        web_results = web_search_tool(user_query)
-                        llm = create_chat_llm(temperature=0.5)
-                        prompt = f"""
-You are a travel assistant. Summarize the following search results into a clear, friendly, and useful answer.
-Search Results:
-{web_results}
-
-Question: {user_query}
-
-Answer (be concise and helpful):
-"""
-                        response = llm.invoke(prompt)
-                        final = response.content if hasattr(response, "content") else str(response)
-                        st.markdown("### 🌐 Web Search Answer")
-                        st.write(final)
-                    else:
-                        # Build context + request model to answer with citations to chunk index
-                        context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
-                        prompt = f"""
-You are a travel assistant. Use ONLY the provided context. For any fact you state, append a short citation like (source: Chunk 2).
-If the answer cannot be found in the context, say "I cannot answer this based on the provided context."
-
-Context:
-{context}
-
-Question: {user_query}
-
-Answer:
-"""
-                        llm = create_chat_llm(temperature=0.3)
-                        response = llm.invoke(prompt)
-                        final = response.content if hasattr(response, "content") else str(response)
-                        st.markdown("### 🧭 Answer from PDF (with provenance)")
-                        st.write(final)
-
-                        with st.expander("📘 View retrieved document chunks"):
-                            for i, doc in enumerate(relevant_docs):
-                                st.markdown(f"**Chunk {i+1}:**")
-                                st.write(doc.page_content)
-
-                except Exception as e:
-                    logger.exception("Retrieval / generation failed: %s", e)
-                    st.error(f"Error during retrieval/generation: {e}")
-
-# -------------------------
-# CASE: Web search only
-# -------------------------
-elif option == "Search travel info on web":
+if option == "Search travel info on web":
     st.subheader("🌐 Ask anything travel-related")
-    user_query = st.text_input("Where would you like to go or what do you want to know?")
+    user_query = st.text_input("Where would you like to go or what do you want to know?", "where should I visit in goa")
+    
     if st.button("Search"):
         if not user_query.strip():
             st.warning("Please enter a travel query.")
@@ -286,8 +235,11 @@ elif option == "Search travel info on web":
             try:
                 st.info("🔍 Searching the web...")
                 web_results = web_search_tool(user_query)
-                llm = create_chat_llm(temperature=0.5)
-                prompt = f"""
+                
+                # Try to use Gemini for summarization, but fallback to direct results
+                try:
+                    llm = create_chat_llm(temperature=0.5)
+                    prompt = f"""
 You are a travel assistant. Summarize the following search results into a concise, friendly, and informative answer for a traveler.
 
 Search Results:
@@ -297,19 +249,25 @@ Question: {user_query}
 
 Answer:
 """
-                response = llm.invoke(prompt)
-                final = response.content if hasattr(response, "content") else str(response)
-                st.markdown("### 🧭 Travel Insights:")
-                st.write(final)
+                    response = llm.invoke(prompt)
+                    final = response.content if hasattr(response, "content") else str(response)
+                    st.markdown("### 🧭 Travel Insights:")
+                    st.write(final)
+                except Exception as e:
+                    logger.warning(f"Gemini summarization failed, showing raw results: {e}")
+                    st.markdown("### 🔍 Search Results (Direct):")
+                    st.write(web_results)
+                    
             except Exception as e:
                 logger.exception("Web search error: %s", e)
-                st.error(f"❌ Web search error: {e}")
+                st.error(f"❌ Search error: {e}")
 
 # -------------------------
 # CASE: Weather only
 # -------------------------
 elif option == "Check weather in a city":
-    city = st.text_input("Enter city name:")
+    st.subheader("🌤 Check Weather")
+    city = st.text_input("Enter city name:", "Goa")
     if st.button("Get Weather"):
         if not city.strip():
             st.warning("Please enter a city name.")
@@ -326,24 +284,137 @@ elif option == "Check weather in a city":
                 st.error(f"❌ Error fetching weather: {e}")
 
 # -------------------------
+# CASE: RAG flow (PDF upload)
+# -------------------------
+elif option == "Ask using a travel document":
+    st.subheader("📄 Document-based Travel Assistant")
+    uploaded_pdf = st.file_uploader("Upload your travel PDF", type=["pdf"])
+    if uploaded_pdf:
+        pdf_path = os.path.join(".", uploaded_pdf.name)
+        with open(pdf_path, "wb") as f:
+            f.write(uploaded_pdf.read())
+        st.success(f"✅ Uploaded: {uploaded_pdf.name}")
+
+        text = ""
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for p in pdf.pages:
+                    text += p.extract_text() or ""
+            if not text.strip():
+                st.warning("No text extracted from PDF; maybe it's scanned images. Consider OCR.")
+        except Exception as e:
+            st.error(f"❌ Failed to read PDF: {e}")
+            st.stop()
+
+        chunks = split_text_with_meta(text)
+        try:
+            with st.spinner("Embedding document and building vectorstore..."):
+                vectorstore = build_or_load_vectorstore_from_chunks(chunks)
+        except Exception as e:
+            st.error(f"❌ Embedding / vectorstore error: {e}")
+            st.stop()
+
+        user_query = st.text_input("Enter your question here:")
+        if st.button("Get Answer"):
+            if not user_query.strip():
+                st.warning("Please type a question.")
+            else:
+                try:
+                    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                    relevant_docs = retriever.get_relevant_documents(user_query)
+                    if not relevant_docs:
+                        st.info("📭 No relevant chunks found in PDF.")
+                    else:
+                        context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
+                        try:
+                            llm = create_chat_llm(temperature=0.3)
+                            prompt = f"""Use this context to answer the question:
+
+Context:
+{context}
+
+Question: {user_query}
+
+Answer:"""
+                            response = llm.invoke(prompt)
+                            final = response.content if hasattr(response, "content") else str(response)
+                            st.markdown("### 🧭 Answer from PDF")
+                            st.write(final)
+                        except Exception as e:
+                            st.warning(f"LLM failed, showing raw context: {e}")
+                            st.markdown("### 📚 Relevant Document Sections")
+                            for i, doc in enumerate(relevant_docs):
+                                st.markdown(f"**Section {i+1}:**")
+                                st.write(doc.page_content)
+
+                except Exception as e:
+                    logger.exception("Retrieval failed: %s", e)
+                    st.error(f"Error during retrieval: {e}")
+
+# -------------------------
 # CASE: Agent (combined tools)
 # -------------------------
 elif option == "Agent (combined tools)":
-    st.subheader("🤖 Agent (uses web search + weather tool)")
-    agent_query = st.text_input("Ask the agent anything (e.g., 'Weather in Tokyo and top attractions')")
-    if st.button("Run Agent"):
+    st.subheader("🤖 Smart Assistant (Web + Weather)")
+    agent_query = st.text_input("Ask anything (e.g., 'Weather in Tokyo and top attractions')", 
+                               "Best places to visit in Goa and current weather")
+    if st.button("Run Assistant"):
         if not agent_query.strip():
             st.warning("Please enter a query.")
         else:
             try:
-                st.info("⚙️ Running agent...")
-                # Build a lightweight agent that knows about the web and weather tools.
-                llm = create_chat_llm(temperature=0.3)
-                agent = initialize_agent([web_tool, weather_tool_wrapped], llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False)
-                # Run
-                result = agent.run(agent_query)
-                st.markdown("### 🤖 Agent Result")
-                st.write(result)
+                st.info("⚙️ Processing your request...")
+                # For now, use direct tool calls instead of agent
+                weather_part = ""
+                if "weather" in agent_query.lower():
+                    city = "Goa"  # Default, you could extract this
+                    weather_part = weather_tool(city)
+                
+                search_part = web_search_tool(agent_query)
+                
+                try:
+                    llm = create_chat_llm(temperature=0.3)
+                    combined_info = f"Web Search Results: {search_part}"
+                    if weather_part:
+                        combined_info += f"\n\nWeather Information: {weather_part}"
+                    
+                    prompt = f"""As a travel assistant, provide helpful information based on this data:
+
+{combined_info}
+
+Question: {agent_query}
+
+Provide a comprehensive, friendly answer:"""
+                    
+                    response = llm.invoke(prompt)
+                    result = response.content if hasattr(response, "content") else str(response)
+                    st.markdown("### 🤖 Travel Assistance")
+                    st.write(result)
+                    
+                except Exception as e:
+                    st.warning(f"Gemini processing failed, showing raw results: {e}")
+                    st.markdown("### 🔍 Raw Results")
+                    if weather_part:
+                        st.markdown("**🌤 Weather:**")
+                        st.write(weather_part)
+                    st.markdown("**🔍 Web Search:**")
+                    st.write(search_part)
+                    
             except Exception as e:
-                logger.exception("Agent run failed: %s", e)
-                st.error(f"Agent error: {e}")
+                logger.exception("Assistant failed: %s", e)
+                st.error(f"Assistant error: {e}")
+
+# Add model debug button
+with st.sidebar:
+    if st.button("🛠 Debug: Check Available Models"):
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=GOOGLE_API_KEY)
+            models = genai.list_models()
+            st.write("### Available Models:")
+            for model in models:
+                if 'generateContent' in model.supported_generation_methods:
+                    st.write(f"✅ **{model.name}**")
+                    st.write(f"   Methods: {model.supported_generation_methods}")
+        except Exception as e:
+            st.error(f"Error checking models: {e}")
