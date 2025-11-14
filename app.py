@@ -49,13 +49,11 @@ os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 # -------------------------
 PERSIST_DIR = "./chroma_db"
 EMBEDDING_MODEL_NAME = "models/embedding-001"
-# Try these model names in order
+# Use the available models from your API
 CHAT_MODEL_CANDIDATES = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro-latest", 
-    "gemini-pro",
-    "models/gemini-pro",
-    "gemini-1.0-pro",
+    "models/gemini-2.5-flash",  # Primary - this should work
+    "models/gemini-2.5-flash-preview-05-20",  # Fallback
+    "models/gemini-2.5-pro-preview-03-25",  # Fallback
 ]
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
@@ -136,34 +134,15 @@ def create_chat_llm(temperature: float = 0.3):
             test_response = llm.invoke("Say 'Hello'")
             if test_response:
                 logger.info(f"✅ Successfully loaded model: {model_name}")
+                st.success(f"✅ Using model: {model_name.split('/')[-1]}")
                 return llm
         except Exception as e:
             last_error = e
             logger.warning(f"❌ Model {model_name} failed: {e}")
             continue
     
-    # If all models fail, show available models
+    # If all models fail
     st.error(f"❌ All model attempts failed. Last error: {last_error}")
-    st.info("🔍 Checking available models...")
-    
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=GOOGLE_API_KEY)
-        models = genai.list_models()
-        available_models = []
-        for model in models:
-            if 'generateContent' in model.supported_generation_methods:
-                available_models.append(model.name)
-        
-        if available_models:
-            st.write("Available models for your API key:")
-            for model in available_models:
-                st.write(f"- {model}")
-        else:
-            st.write("No generateContent models found.")
-    except Exception as e:
-        st.write(f"Could not list models: {e}")
-    
     raise RuntimeError(f"No working model found. Last error: {last_error}")
 
 # Wrap tools for LangChain Agent
@@ -222,7 +201,7 @@ option = st.radio(
 )
 
 # -------------------------
-# CASE: Web search only (Simplified - Direct DuckDuckGo results)
+# CASE: Web search only
 # -------------------------
 if option == "Search travel info on web":
     st.subheader("🌐 Ask anything travel-related")
@@ -236,23 +215,29 @@ if option == "Search travel info on web":
                 st.info("🔍 Searching the web...")
                 web_results = web_search_tool(user_query)
                 
-                # Try to use Gemini for summarization, but fallback to direct results
+                # Use Gemini for summarization
                 try:
                     llm = create_chat_llm(temperature=0.5)
                     prompt = f"""
-You are a travel assistant. Summarize the following search results into a concise, friendly, and informative answer for a traveler.
+You are a helpful travel assistant. Please analyze the following search results and provide a comprehensive, well-organized answer to the user's question.
 
-Search Results:
+SEARCH RESULTS:
 {web_results}
 
-Question: {user_query}
+USER'S QUESTION: {user_query}
 
-Answer:
-"""
+Please provide a detailed answer with these sections if applicable:
+1. Top attractions/places to visit
+2. Best time to visit
+3. Travel tips
+4. Local highlights
+
+Make it engaging and practical for travelers:"""
                     response = llm.invoke(prompt)
                     final = response.content if hasattr(response, "content") else str(response)
-                    st.markdown("### 🧭 Travel Insights:")
+                    st.markdown("### 🧭 Travel Insights for Goa")
                     st.write(final)
+                    
                 except Exception as e:
                     logger.warning(f"Gemini summarization failed, showing raw results: {e}")
                     st.markdown("### 🔍 Search Results (Direct):")
@@ -335,11 +320,17 @@ Context:
 
 Question: {user_query}
 
-Answer:"""
+Provide a detailed and helpful answer:"""
                             response = llm.invoke(prompt)
                             final = response.content if hasattr(response, "content") else str(response)
                             st.markdown("### 🧭 Answer from PDF")
                             st.write(final)
+                            
+                            with st.expander("View retrieved document sections"):
+                                for i, doc in enumerate(relevant_docs):
+                                    st.markdown(f"**Section {i+1}:**")
+                                    st.write(doc.page_content)
+                                    
                         except Exception as e:
                             st.warning(f"LLM failed, showing raw context: {e}")
                             st.markdown("### 📚 Relevant Document Sections")
@@ -364,57 +355,77 @@ elif option == "Agent (combined tools)":
         else:
             try:
                 st.info("⚙️ Processing your request...")
-                # For now, use direct tool calls instead of agent
-                weather_part = ""
+                
+                # Extract city for weather if mentioned
+                city = "Goa"  # default
                 if "weather" in agent_query.lower():
-                    city = "Goa"  # Default, you could extract this
-                    weather_part = weather_tool(city)
+                    # Simple city extraction - you could make this smarter
+                    for word in agent_query.split():
+                        if word.lower() not in ['weather', 'in', 'and', 'the']:
+                            city = word
+                            break
                 
-                search_part = web_search_tool(agent_query)
+                # Get weather if relevant
+                weather_info = ""
+                if "weather" in agent_query.lower():
+                    weather_info = weather_tool(city)
                 
+                # Get web search results
+                search_query = agent_query
+                if "weather" in agent_query.lower():
+                    # Remove weather part for search
+                    search_query = agent_query.replace("weather", "").replace("Weather", "").strip()
+                
+                search_results = web_search_tool(search_query)
+                
+                # Combine and process with Gemini
                 try:
                     llm = create_chat_llm(temperature=0.3)
-                    combined_info = f"Web Search Results: {search_part}"
-                    if weather_part:
-                        combined_info += f"\n\nWeather Information: {weather_part}"
                     
-                    prompt = f"""As a travel assistant, provide helpful information based on this data:
+                    combined_context = f"WEB SEARCH RESULTS:\n{search_results}"
+                    if weather_info:
+                        combined_context += f"\n\nWEATHER INFORMATION:\n{weather_info}"
+                    
+                    prompt = f"""As a knowledgeable travel assistant, provide comprehensive information based on the following data:
 
-{combined_info}
+{combined_context}
 
-Question: {agent_query}
+USER'S QUESTION: {agent_query}
 
-Provide a comprehensive, friendly answer:"""
+Please provide a well-structured answer that includes:
+- Key attractions and activities
+- Practical travel information
+- Current conditions (if weather data available)
+- Helpful tips for visitors
+
+Make it engaging and useful for someone planning a trip:"""
                     
                     response = llm.invoke(prompt)
                     result = response.content if hasattr(response, "content") else str(response)
                     st.markdown("### 🤖 Travel Assistance")
                     st.write(result)
                     
+                    # Show raw data in expander
+                    with st.expander("View raw data sources"):
+                        if weather_info:
+                            st.markdown("**🌤 Weather Data:**")
+                            st.write(weather_info)
+                        st.markdown("**🔍 Web Search Results:**")
+                        st.write(search_results[:1000] + "..." if len(search_results) > 1000 else search_results)
+                        
                 except Exception as e:
                     st.warning(f"Gemini processing failed, showing raw results: {e}")
                     st.markdown("### 🔍 Raw Results")
-                    if weather_part:
+                    if weather_info:
                         st.markdown("**🌤 Weather:**")
-                        st.write(weather_part)
+                        st.write(weather_info)
                     st.markdown("**🔍 Web Search:**")
-                    st.write(search_part)
+                    st.write(search_results)
                     
             except Exception as e:
                 logger.exception("Assistant failed: %s", e)
                 st.error(f"Assistant error: {e}")
 
-# Add model debug button
-with st.sidebar:
-    if st.button("🛠 Debug: Check Available Models"):
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=GOOGLE_API_KEY)
-            models = genai.list_models()
-            st.write("### Available Models:")
-            for model in models:
-                if 'generateContent' in model.supported_generation_methods:
-                    st.write(f"✅ **{model.name}**")
-                    st.write(f"   Methods: {model.supported_generation_methods}")
-        except Exception as e:
-            st.error(f"Error checking models: {e}")
+# Add success message at the bottom
+st.sidebar.markdown("---")
+st.sidebar.info("✅ Using Gemini 2.5 Flash model")
