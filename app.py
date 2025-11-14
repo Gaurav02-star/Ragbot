@@ -6,7 +6,6 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
-
 import requests
 import streamlit as st
 import pdfplumber
@@ -64,6 +63,40 @@ CHUNK_OVERLAP = 100
 DB_PATH = "travel_assistant.db"
 
 # -------------------------
+# Rate Limiting and Caching
+# -------------------------
+class RateLimiter:
+    def __init__(self):
+        self.last_call_time = 0
+        self.min_interval = 7  # seconds between calls (to stay under 10/minute)
+    
+    def wait_if_needed(self):
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_call_time
+        if time_since_last_call < self.min_interval:
+            sleep_time = self.min_interval - time_since_last_call
+            time.sleep(sleep_time)
+        self.last_call_time = time.time()
+
+# Global rate limiter
+rate_limiter = RateLimiter()
+
+# Response cache to avoid duplicate API calls
+response_cache = {}
+
+def get_cached_response(key: str):
+    """Get cached response if available and not expired"""
+    if key in response_cache:
+        cached_time, response = response_cache[key]
+        if time.time() - cached_time < 300:  # 5 minute cache
+            return response
+    return None
+
+def set_cached_response(key: str, response: Any):
+    """Cache a response for 5 minutes"""
+    response_cache[key] = (time.time(), response)
+
+# -------------------------
 # SQLite Database Setup
 # -------------------------
 def init_database():
@@ -71,7 +104,6 @@ def init_database():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Create searches table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +114,6 @@ def init_database():
         )
     ''')
     
-    # Create itineraries table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS itineraries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +125,6 @@ def init_database():
         )
     ''')
     
-    # Create flight searches table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS flight_searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,7 +146,7 @@ def save_search(query: str, search_type: str, result_text: str = ""):
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO searches (query, search_type, result_text) VALUES (?, ?, ?)",
-        (query, search_type, result_text[:1000])  # Limit result text length
+        (query, search_type, result_text[:1000])
     )
     conn.commit()
     conn.close()
@@ -198,7 +228,6 @@ class AmadeusClient:
             
             token_data = response.json()
             self.access_token = token_data['access_token']
-            # Set expiry 5 minutes before actual expiry to be safe
             expires_in = token_data.get('expires_in', 1799) - 300
             self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
             
@@ -223,7 +252,7 @@ class AmadeusClient:
                 'destinationLocationCode': destination.upper(),
                 'departureDate': departure_date,
                 'adults': adults,
-                'max': 10  # Limit results
+                'max': 10
             }
             
             if return_date:
@@ -290,10 +319,67 @@ class AmadeusClient:
 amadeus_client = AmadeusClient(AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET)
 
 # -------------------------
-# Itinerary Generation
+# Enhanced LLM Creation with Better Rate Limiting
+# -------------------------
+def create_chat_llm(temperature: float = 0.3):
+    """Create LLM with fallback for different model names"""
+    last_error = None
+    
+    for model_name in CHAT_MODEL_CANDIDATES:
+        try:
+            logger.info(f"Trying model: {model_name}")
+            llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                temperature=temperature,
+                google_api_key=GOOGLE_API_KEY
+            )
+            # Test with a simple prompt to verify the model works
+            rate_limiter.wait_if_needed()
+            test_response = llm.invoke("Say 'Hello'")
+            if test_response:
+                logger.info(f"✅ Successfully loaded model: {model_name}")
+                return llm
+        except Exception as e:
+            last_error = e
+            logger.warning(f"❌ Model {model_name} failed: {e}")
+            continue
+    
+    st.error(f"❌ All model attempts failed. Last error: {last_error}")
+    raise RuntimeError(f"No working model found. Last error: {last_error}")
+
+def safe_llm_invoke(llm, prompt: str, max_retries: int = 3):
+    """Safely invoke LLM with rate limiting and retries"""
+    cache_key = f"llm_{hash(prompt)}"
+    cached_response = get_cached_response(cache_key)
+    if cached_response:
+        return cached_response
+    
+    for attempt in range(max_retries):
+        try:
+            rate_limiter.wait_if_needed()
+            response = llm.invoke(prompt)
+            result = response.content if hasattr(response, "content") else str(response)
+            set_cached_response(cache_key, result)
+            return result
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff
+                st.warning(f"⏳ Rate limit hit. Waiting {wait_time} seconds...")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise e
+
+# -------------------------
+# Itinerary Generation with Fallbacks
 # -------------------------
 def generate_itinerary(destination: str, duration_days: int, interests: List[str], budget: str = "medium"):
-    """Generate a travel itinerary using AI"""
+    """Generate a travel itinerary using AI with fallbacks"""
+    cache_key = f"itinerary_{destination}_{duration_days}_{'_'.join(interests)}_{budget}"
+    cached_response = get_cached_response(cache_key)
+    if cached_response:
+        return cached_response
+    
     try:
         llm = create_chat_llm(temperature=0.7)
         
@@ -313,8 +399,7 @@ def generate_itinerary(destination: str, duration_days: int, interests: List[str
         Make it practical, engaging, and tailored to the interests mentioned.
         """
         
-        response = llm.invoke(prompt)
-        itinerary_text = response.content if hasattr(response, 'content') else str(response)
+        itinerary_text = safe_llm_invoke(llm, prompt)
         
         # Create structured itinerary data
         itinerary_data = {
@@ -330,14 +415,75 @@ def generate_itinerary(destination: str, duration_days: int, interests: List[str
         title = f"{duration_days}-Day {destination} Trip"
         save_itinerary(title, destination, duration_days, itinerary_data)
         
+        set_cached_response(cache_key, itinerary_data)
         return itinerary_data
         
     except Exception as e:
         logger.error(f"Itinerary generation error: {e}")
-        return {"error": str(e)}
+        # Fallback: Create a basic itinerary without AI
+        return generate_basic_itinerary(destination, duration_days, interests, budget)
+
+def generate_basic_itinerary(destination: str, duration_days: int, interests: List[str], budget: str = "medium"):
+    """Generate a basic itinerary without AI when rate limits are hit"""
+    st.info("🤖 Using smart itinerary template (AI service limited)")
+    
+    basic_itinerary = f"""
+# {duration_days}-Day {destination} Travel Itinerary
+
+## Traveler Profile
+- **Interests**: {', '.join(interests)}
+- **Budget**: {budget}
+- **Duration**: {duration_days} days
+
+## Quick Travel Tips
+1. **Best Time to Visit**: Check local weather patterns
+2. **Transport**: Research local transport options
+3. **Accommodation**: Book in advance for better rates
+4. **Food**: Try local cuisine and street food
+5. **Culture**: Respect local customs and traditions
+
+## Suggested Daily Structure
+"""
+    
+    for day in range(1, duration_days + 1):
+        basic_itinerary += f"""
+### Day {day}
+**Morning**: Explore local attractions
+**Afternoon**: {', '.join(interests)} activities  
+**Evening**: Local dining experience
+
+"""
+    
+    basic_itinerary += """
+## Budget Tips
+- Look for free walking tours
+- Use public transportation
+- Eat at local markets
+- Book activities in advance for discounts
+
+## Emergency Contacts
+- Local emergency: 112 (most countries)
+- Your embassy/consulate
+- Travel insurance provider
+"""
+    
+    itinerary_data = {
+        'destination': destination,
+        'duration_days': duration_days,
+        'interests': interests,
+        'budget': budget,
+        'itinerary_text': basic_itinerary,
+        'generated_at': datetime.now().isoformat(),
+        'ai_generated': False
+    }
+    
+    title = f"{duration_days}-Day {destination} Trip (Basic)"
+    save_itinerary(title, destination, duration_days, itinerary_data)
+    
+    return itinerary_data
 
 # -------------------------
-# Existing Utility Functions (from previous code)
+# Existing Utility Functions
 # -------------------------
 def requests_get_with_retries(url, params=None, headers=None, retries=3, backoff=1.0, timeout=6):
     """Simple GET with retries and exponential backoff."""
@@ -387,33 +533,6 @@ def web_search_tool(query: str) -> str:
         logger.exception("Web search failed: %s", e)
         return f"Web search error: {e}"
 
-def create_chat_llm(temperature: float = 0.3):
-    """Create LLM with fallback for different model names"""
-    last_error = None
-    
-    for model_name in CHAT_MODEL_CANDIDATES:
-        try:
-            logger.info(f"Trying model: {model_name}")
-            llm = ChatGoogleGenerativeAI(
-                model=model_name,
-                temperature=temperature,
-                google_api_key=GOOGLE_API_KEY
-            )
-            # Test with a simple prompt to verify the model works
-            test_response = llm.invoke("Say 'Hello'")
-            if test_response:
-                logger.info(f"✅ Successfully loaded model: {model_name}")
-                return llm
-        except Exception as e:
-            last_error = e
-            logger.warning(f"❌ Model {model_name} failed: {e}")
-            continue
-    
-    st.error(f"❌ All model attempts failed. Last error: {last_error}")
-    raise RuntimeError(f"No working model found. Last error: {last_error}")
-
-# ... (Include all the other existing functions like simple_text_search, create_embedding_model, build_or_load_vectorstore_from_chunks, split_text_with_meta)
-
 # Wrap tools for LangChain Agent
 web_tool = Tool(
     name="web_search",
@@ -434,12 +553,11 @@ page = st.sidebar.radio("Go to", [
     "Travel Search", 
     "Flight Search", 
     "Itinerary Generator",
-    "Saved Data",
-    "Document Search"
+    "Saved Data"
 ])
 
 # -------------------------
-# PAGE: Travel Search (Existing functionality)
+# PAGE: Travel Search
 # -------------------------
 if page == "Travel Search":
     st.header("🔍 Travel Information Search")
@@ -460,7 +578,7 @@ if page == "Travel Search":
                     st.info("🔍 Searching the web...")
                     web_results = web_search_tool(user_query)
                     
-                    # Use Gemini for summarization
+                    # Use Gemini for summarization with safe invocation
                     try:
                         llm = create_chat_llm(temperature=0.5)
                         prompt = f"""
@@ -478,12 +596,9 @@ Please provide a detailed answer with these sections if applicable:
 4. Local highlights
 
 Make it engaging and practical for travelers:"""
-                        response = llm.invoke(prompt)
-                        final = response.content if hasattr(response, "content") else str(response)
+                        final = safe_llm_invoke(llm, prompt)
                         st.markdown("### 🧭 Travel Insights")
                         st.write(final)
-                        
-                        # Save search to database
                         save_search(user_query, "web_search", final[:1000])
                         
                     except Exception as e:
@@ -525,26 +640,23 @@ Make it engaging and practical for travelers:"""
                     st.info("⚙️ Processing your request...")
                     
                     # Extract city for weather if mentioned
-                    city = "Goa"  # default
+                    city = "Goa"
                     if "weather" in agent_query.lower():
                         for word in agent_query.split():
                             if word.lower() not in ['weather', 'in', 'and', 'the']:
                                 city = word
                                 break
                     
-                    # Get weather if relevant
                     weather_info = ""
                     if "weather" in agent_query.lower():
                         weather_info = weather_tool(city)
                     
-                    # Get web search results
                     search_query = agent_query
                     if "weather" in agent_query.lower():
                         search_query = agent_query.replace("weather", "").replace("Weather", "").strip()
                     
                     search_results = web_search_tool(search_query)
                     
-                    # Combine and process with Gemini
                     try:
                         llm = create_chat_llm(temperature=0.3)
                         
@@ -560,8 +672,7 @@ USER'S QUESTION: {agent_query}
 
 Please provide a well-structured answer:"""
                         
-                        response = llm.invoke(prompt)
-                        result = response.content if hasattr(response, "content") else str(response)
+                        result = safe_llm_invoke(llm, prompt)
                         st.markdown("### 🤖 Travel Assistance")
                         st.write(result)
                         save_search(agent_query, "smart_assistant", result[:1000])
@@ -646,6 +757,8 @@ elif page == "Flight Search":
 elif page == "Itinerary Generator":
     st.header("🗓️ AI Itinerary Generator")
     
+    st.info("💡 **Note**: Free tier has limited AI requests. Basic templates will be used if limits are reached.")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -660,28 +773,37 @@ elif page == "Itinerary Generator":
         )
         budget = st.selectbox("Budget", ["low", "medium", "high"])
     
+    use_ai = st.checkbox("Use AI for detailed itinerary (may hit rate limits)", value=True)
+    
     if st.button("Generate Itinerary"):
         if not destination:
             st.warning("Please enter a destination.")
         else:
             with st.spinner("Creating your personalized itinerary..."):
-                itinerary = generate_itinerary(destination, duration_days, interests, budget)
+                if use_ai:
+                    itinerary = generate_itinerary(destination, duration_days, interests, budget)
+                else:
+                    itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
                 
                 if "error" in itinerary:
                     st.error(f"❌ Itinerary generation failed: {itinerary['error']}")
+                    # Fallback to basic itinerary
+                    st.info("🔄 Trying basic itinerary template...")
+                    itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
                 else:
                     st.success("✅ Itinerary generated successfully!")
-                    st.markdown("### 📅 Your Travel Itinerary")
-                    st.write(itinerary['itinerary_text'])
                     
-                    # Download option
-                    itinerary_text = f"{duration_days}-Day {destination} Itinerary\n\n{itinerary['itinerary_text']}"
-                    st.download_button(
-                        label="Download Itinerary",
-                        data=itinerary_text,
-                        file_name=f"{destination.replace(',', '').replace(' ', '_')}_{duration_days}day_itinerary.txt",
-                        mime="text/plain"
-                    )
+                st.markdown("### 📅 Your Travel Itinerary")
+                st.write(itinerary['itinerary_text'])
+                
+                # Download option
+                itinerary_text = f"{duration_days}-Day {destination} Itinerary\n\n{itinerary['itinerary_text']}"
+                st.download_button(
+                    label="Download Itinerary",
+                    data=itinerary_text,
+                    file_name=f"{destination.replace(',', '').replace(' ', '_')}_{duration_days}day_itinerary.txt",
+                    mime="text/plain"
+                )
 
 # -------------------------
 # PAGE: Saved Data
@@ -689,7 +811,7 @@ elif page == "Itinerary Generator":
 elif page == "Saved Data":
     st.header("💾 Saved Data")
     
-    tab1, tab2, tab3 = st.tabs(["Recent Searches", "Saved Itineraries", "Flight Searches"])
+    tab1, tab2 = st.tabs(["Recent Searches", "Saved Itineraries"])
     
     with tab1:
         st.subheader("Recent Searches")
@@ -715,47 +837,36 @@ elif page == "Saved Data":
                 st.write(f"**{title}**")
                 st.write(f"Destination: {destination} | Duration: {duration_days} days")
                 st.write(f"Created: {created_at}")
-                
-                if st.button(f"View Details", key=f"itinerary_{itinerary_id}"):
-                    # Here you would fetch and display the full itinerary
-                    st.info("Full itinerary details would be displayed here")
                 st.write("---")
-    
-    with tab3:
-        st.subheader("Flight Search History")
-        # You can implement flight search history display here
-        st.info("Flight search history display will be implemented here")
 
 # -------------------------
-# PAGE: Document Search (Existing PDF functionality)
-# -------------------------
-elif page == "Document Search":
-    st.header("📄 Document-based Travel Assistant")
-    
-    # Include the existing PDF upload and search functionality here
-    # (Copy the existing document search code from your previous implementation)
-    st.info("Document search functionality - to be integrated from existing code")
-
-# -------------------------
-# Sidebar with Recent Activity
+# Sidebar with Info
 # -------------------------
 with st.sidebar:
     st.markdown("---")
-    st.subheader("Recent Activity")
+    st.subheader("API Status")
     
-    recent_searches = get_recent_searches(5)
-    if recent_searches:
-        for query, search_type, created_at in recent_searches:
-            st.caption(f"🔍 {search_type}: {query[:30]}...")
+    # Check Gemini status
+    try:
+        llm = create_chat_llm()
+        st.success("✅ Gemini API: Working")
+    except:
+        st.error("❌ Gemini API: Limited")
+    
+    if AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET:
+        st.success("✅ Amadeus: Configured")
     else:
-        st.caption("No recent activity")
+        st.warning("⚠️ Amadeus: Not configured")
+    
+    if OPENWEATHER_API_KEY:
+        st.success("✅ Weather: Configured")
+    else:
+        st.warning("⚠️ Weather: Not configured")
     
     st.markdown("---")
     st.info("""
-    **Features:**
-    - 🔍 Web Search
-    - 🌤 Weather Check
-    - ✈️ Flight Search
-    - 🗓 Itinerary Generator
-    - 💾 Search History
+    **Rate Limit Info:**
+    - Gemini Free: 10 req/min
+    - Using smart caching
+    - Basic fallbacks available
     """)
