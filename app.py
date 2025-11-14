@@ -134,7 +134,6 @@ def create_chat_llm(temperature: float = 0.3):
             test_response = llm.invoke("Say 'Hello'")
             if test_response:
                 logger.info(f"✅ Successfully loaded model: {model_name}")
-                st.success(f"✅ Using model: {model_name.split('/')[-1]}")
                 return llm
         except Exception as e:
             last_error = e
@@ -145,25 +144,66 @@ def create_chat_llm(temperature: float = 0.3):
     st.error(f"❌ All model attempts failed. Last error: {last_error}")
     raise RuntimeError(f"No working model found. Last error: {last_error}")
 
-# Wrap tools for LangChain Agent
-web_tool = Tool(
-    name="web_search",
-    func=web_search_tool,
-    description="Search the web for travel information. Input should be a query string."
-)
-weather_tool_wrapped = Tool(
-    name="weather",
-    func=weather_tool,
-    description="Return weather for a city. Input is a city name."
-)
+# -------------------------
+# Simple Text Search (Fallback when embeddings fail)
+# -------------------------
+def simple_text_search(text: str, query: str, top_k: int = 3) -> List[str]:
+    """
+    Simple keyword-based search as fallback when embeddings are not available.
+    Returns the most relevant chunks based on keyword matching.
+    """
+    # Split text into sentences or small chunks
+    sentences = []
+    for paragraph in text.split('\n'):
+        for sentence in paragraph.split('.'):
+            sentence = sentence.strip()
+            if sentence and len(sentence) > 10:
+                sentences.append(sentence)
+    
+    # Score sentences based on query keyword matches
+    query_words = query.lower().split()
+    scored_sentences = []
+    
+    for sentence in sentences:
+        score = 0
+        sentence_lower = sentence.lower()
+        for word in query_words:
+            if len(word) > 3 and word in sentence_lower:
+                score += 1
+        if score > 0:
+            scored_sentences.append((score, sentence))
+    
+    # Sort by score and return top results
+    scored_sentences.sort(reverse=True, key=lambda x: x[0])
+    return [sentence for _, sentence in scored_sentences[:top_k]]
 
 # -------------------------
-# Helper: create/load persistent Chroma vectorstore
+# Embedding with Quota Handling
 # -------------------------
-def build_or_load_vectorstore_from_chunks(chunks: List[str]):
-    """Create or load a persisted Chroma vectorstore for the provided chunks."""
+def create_embedding_model():
+    """Create embedding model with quota error handling"""
     try:
         embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+        # Test the embedding model with a small query
+        test_embedding = embedding_model.embed_query("test")
+        return embedding_model
+    except Exception as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
+            return None
+        else:
+            raise e
+
+def build_or_load_vectorstore_from_chunks(chunks: List[str]):
+    """Create or load a persisted Chroma vectorstore with quota handling"""
+    try:
+        embedding_model = create_embedding_model()
+        
+        if embedding_model is None:
+            # Embedding not available, return None to use fallback
+            return None
+            
+        # If persisted data exists, try to open
         if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
             logger.info("Loading existing Chroma vectorstore from %s", PERSIST_DIR)
             vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
@@ -176,8 +216,24 @@ def build_or_load_vectorstore_from_chunks(chunks: List[str]):
                 logger.warning("Chroma persist() failed: %s", e)
         return vectorstore
     except Exception as e:
-        logger.exception("Failed to build/load vectorstore: %s", e)
-        raise
+        if "quota" in str(e).lower() or "429" in str(e):
+            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
+            return None
+        else:
+            logger.exception("Failed to build/load vectorstore: %s", e)
+            raise
+
+# Wrap tools for LangChain Agent
+web_tool = Tool(
+    name="web_search",
+    func=web_search_tool,
+    description="Search the web for travel information. Input should be a query string."
+)
+weather_tool_wrapped = Tool(
+    name="weather",
+    func=weather_tool,
+    description="Return weather for a city. Input is a city name."
+)
 
 # -------------------------
 # Small helper: split text into chunks with metadata
@@ -235,7 +291,7 @@ Please provide a detailed answer with these sections if applicable:
 Make it engaging and practical for travelers:"""
                     response = llm.invoke(prompt)
                     final = response.content if hasattr(response, "content") else str(response)
-                    st.markdown("### 🧭 Travel Insights for Goa")
+                    st.markdown("### 🧭 Travel Insights")
                     st.write(final)
                     
                 except Exception as e:
@@ -269,10 +325,14 @@ elif option == "Check weather in a city":
                 st.error(f"❌ Error fetching weather: {e}")
 
 # -------------------------
-# CASE: RAG flow (PDF upload)
+# CASE: RAG flow (PDF upload) - WITH QUOTA HANDLING
 # -------------------------
 elif option == "Ask using a travel document":
     st.subheader("📄 Document-based Travel Assistant")
+    
+    # Show quota warning
+    st.info("💡 **Note:** If you see quota errors, the app will automatically use keyword search instead of AI embeddings.")
+    
     uploaded_pdf = st.file_uploader("Upload your travel PDF", type=["pdf"])
     if uploaded_pdf:
         pdf_path = os.path.join(".", uploaded_pdf.name)
@@ -291,29 +351,72 @@ elif option == "Ask using a travel document":
             st.error(f"❌ Failed to read PDF: {e}")
             st.stop()
 
+        # Store the extracted text for fallback search
+        st.session_state['pdf_text'] = text
+        
         chunks = split_text_with_meta(text)
-        try:
-            with st.spinner("Embedding document and building vectorstore..."):
-                vectorstore = build_or_load_vectorstore_from_chunks(chunks)
-        except Exception as e:
-            st.error(f"❌ Embedding / vectorstore error: {e}")
-            st.stop()
-
-        user_query = st.text_input("Enter your question here:")
+        
+        user_query = st.text_input("Enter your question here:", "where to visit in summer in india")
         if st.button("Get Answer"):
             if not user_query.strip():
                 st.warning("Please type a question.")
             else:
                 try:
-                    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-                    relevant_docs = retriever.get_relevant_documents(user_query)
-                    if not relevant_docs:
-                        st.info("📭 No relevant chunks found in PDF.")
-                    else:
-                        context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
-                        try:
-                            llm = create_chat_llm(temperature=0.3)
-                            prompt = f"""Use this context to answer the question:
+                    with st.spinner("Searching document..."):
+                        vectorstore = build_or_load_vectorstore_from_chunks(chunks)
+                        
+                        if vectorstore is None:
+                            # Use keyword-based fallback search
+                            st.info("🔍 Using keyword search (AI embeddings unavailable)")
+                            relevant_chunks = simple_text_search(text, user_query, top_k=5)
+                            
+                            if not relevant_chunks:
+                                st.info("📭 No relevant content found in PDF. Try web search instead.")
+                                web_results = web_search_tool(user_query)
+                                st.markdown("### 🌐 Web Search Results")
+                                st.write(web_results)
+                            else:
+                                context = "\n\n---\n\n".join([f"[Section {i+1}]: {chunk}" for i, chunk in enumerate(relevant_chunks)])
+                                
+                                try:
+                                    llm = create_chat_llm(temperature=0.3)
+                                    prompt = f"""Based on the following document sections, answer the question:
+
+DOCUMENT SECTIONS:
+{context}
+
+QUESTION: {user_query}
+
+Please provide a helpful answer based on the document content:"""
+                                    
+                                    response = llm.invoke(prompt)
+                                    final = response.content if hasattr(response, "content") else str(response)
+                                    st.markdown("### 📖 Answer from Document")
+                                    st.write(final)
+                                    
+                                    with st.expander("View relevant document sections"):
+                                        for i, chunk in enumerate(relevant_chunks):
+                                            st.markdown(f"**Section {i+1}:**")
+                                            st.write(chunk)
+                                            
+                                except Exception as e:
+                                    st.warning(f"AI processing failed, showing relevant sections: {e}")
+                                    st.markdown("### 📚 Relevant Document Sections")
+                                    for i, chunk in enumerate(relevant_chunks):
+                                        st.markdown(f"**Section {i+1}:**")
+                                        st.write(chunk)
+                        else:
+                            # Use vectorstore for semantic search
+                            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                            relevant_docs = retriever.get_relevant_documents(user_query)
+                            
+                            if not relevant_docs:
+                                st.info("📭 No relevant chunks found in PDF.")
+                            else:
+                                context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
+                                try:
+                                    llm = create_chat_llm(temperature=0.3)
+                                    prompt = f"""Use this context to answer the question:
 
 Context:
 {context}
@@ -321,26 +424,29 @@ Context:
 Question: {user_query}
 
 Provide a detailed and helpful answer:"""
-                            response = llm.invoke(prompt)
-                            final = response.content if hasattr(response, "content") else str(response)
-                            st.markdown("### 🧭 Answer from PDF")
-                            st.write(final)
-                            
-                            with st.expander("View retrieved document sections"):
-                                for i, doc in enumerate(relevant_docs):
-                                    st.markdown(f"**Section {i+1}:**")
-                                    st.write(doc.page_content)
+                                    response = llm.invoke(prompt)
+                                    final = response.content if hasattr(response, "content") else str(response)
+                                    st.markdown("### 🧭 Answer from PDF")
+                                    st.write(final)
                                     
-                        except Exception as e:
-                            st.warning(f"LLM failed, showing raw context: {e}")
-                            st.markdown("### 📚 Relevant Document Sections")
-                            for i, doc in enumerate(relevant_docs):
-                                st.markdown(f"**Section {i+1}:**")
-                                st.write(doc.page_content)
+                                    with st.expander("View retrieved document sections"):
+                                        for i, doc in enumerate(relevant_docs):
+                                            st.markdown(f"**Section {i+1}:**")
+                                            st.write(doc.page_content)
+                                            
+                                except Exception as e:
+                                    st.warning(f"LLM failed, showing raw context: {e}")
+                                    st.markdown("### 📚 Relevant Document Sections")
+                                    for i, doc in enumerate(relevant_docs):
+                                        st.markdown(f"**Section {i+1}:**")
+                                        st.write(doc.page_content)
 
                 except Exception as e:
-                    logger.exception("Retrieval failed: %s", e)
-                    st.error(f"Error during retrieval: {e}")
+                    logger.exception("Document search failed: %s", e)
+                    if "quota" in str(e).lower():
+                        st.error("❌ Embedding quota exceeded. Please try the web search option instead, or upload a smaller document.")
+                    else:
+                        st.error(f"Error during document search: {e}")
 
 # -------------------------
 # CASE: Agent (combined tools)
@@ -426,6 +532,13 @@ Make it engaging and useful for someone planning a trip:"""
                 logger.exception("Assistant failed: %s", e)
                 st.error(f"Assistant error: {e}")
 
-# Add success message at the bottom
-st.sidebar.markdown("---")
-st.sidebar.info("✅ Using Gemini 2.5 Flash model")
+# Add info about quota limits
+with st.sidebar:
+    st.markdown("---")
+    st.info("""
+    **API Usage Notes:**
+    - Chat models: ✅ Working
+    - Embeddings: ⚠️ Limited quota
+    - Web search: ✅ Unlimited
+    - Weather: ✅ Working
+    """)
