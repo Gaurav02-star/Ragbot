@@ -1,13 +1,12 @@
-streamlit>=1.32.0
-openai>=1.30.5
-langchain>=0.0.200
-langchain-openai>=0.1.6
-langchain-community>=0.1.0
-langchain-text-splitters>=0.3.0
-chromadb>=0.4.24
+# ✅ Core dependencies for your Travel RAGBot
+streamlit>=1.30.0
 pdfplumber>=0.10.0
-duckduckgo-search>=3.9.7
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-google-genai>=0.1.0
+google-generativeai>=0.3.0
+chromadb>=0.5.0
+sentence-transformers>=2.2.2
+duckduckgo-search>=8.1.1
+ddgs>=1.0.0
 requests>=2.31.0
-pypdf>=4.2.0
-tiktoken>=0.6.0
-python-dateutil>=2.8.2
