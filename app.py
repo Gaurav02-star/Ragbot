@@ -57,7 +57,7 @@ os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
 # -------------------------
 PERSIST_DIR = "./chroma_db"  # ensure write access in deployment
 EMBEDDING_MODEL_NAME = "models/text-embedding-004"
-CHAT_MODEL_NAME = "gemini-pro"
+CHAT_MODEL_NAME = "gemini-2.0"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
