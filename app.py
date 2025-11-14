@@ -335,13 +335,11 @@ def split_text_with_meta(text: str):
 # LangChain LLM helper (Gemini chat wrapper) with robust fallback
 # -------------------------
 def create_chat_llm(temperature=0.3, show_probe: bool = True) -> ChatGoogleGenerativeAI:
-    """
-    Tries the preferred CHAT_MODEL_NAME first, then fallbacks. Shows probe results in the UI (if show_probe).
-    """
     candidates = []
     if CHAT_MODEL_NAME:
         candidates.append(CHAT_MODEL_NAME)
-    candidates.extend(["gemini-2.0", "gemini-1.5", "gemini-alpha"])
+    # prefer models you see in ListModels; fallback set:
+    candidates.extend(["gemini-2.0", "gemini-1.5", "chat-bison-001", "gemini-alpha"])
 
     attempts = []
     for model_name in candidates:
