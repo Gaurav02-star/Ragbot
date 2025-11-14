@@ -1,3 +1,67 @@
+# === Robust imports + diagnostic info for LangChain splitters ===
+import importlib, sys, traceback
+import streamlit as st
+
+def try_version_info(name, import_name=None):
+    import_name = import_name or name
+    try:
+        m = importlib.import_module(import_name)
+        ver = getattr(m, "__version__", "unknown")
+        st.write(f"Imported {import_name} (package name: {name}) — version: {ver}")
+        return True
+    except Exception as e:
+        st.write(f"Cannot import {import_name} (package: {name}): {e}")
+        return False
+
+# Report packages of interest
+try_version_info("langchain", "langchain")
+try_version_info("langchain-text-splitters", "langchain_text_splitters")
+
+# Try the splitter imports used by different LC releases
+_HAS_LC_SPLITTER = False
+RecursiveCharacterTextSplitter = None
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    _HAS_LC_SPLITTER = True
+    st.write("Using langchain.text_splitter.RecursiveCharacterTextSplitter")
+except Exception:
+    try:
+        # some installs put it in langchain_text_splitters (PyPI name: langchain-text-splitters)
+        from langchain_text_splitters.character import RecursiveCharacterTextSplitter
+        _HAS_LC_SPLITTER = True
+        st.write("Using langchain_text_splitters.character.RecursiveCharacterTextSplitter")
+    except Exception as e:
+        st.write("No langchain RecursiveCharacterTextSplitter available; using fallback splitter.")
+        st.write(traceback.format_exc())
+
+# fallback simple splitter (works if import unavailable)
+class SimpleCharacterSplitter:
+    def __init__(self, chunk_size=500, chunk_overlap=100):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def split_text(self, text: str):
+        if not text:
+            return []
+        L = len(text)
+        i = 0
+        out = []
+        while i < L:
+            end = i + self.chunk_size
+            out.append(text[i:end])
+            i = end - self.chunk_overlap
+            if i < 0:
+                i = 0
+            if i >= L:
+                break
+        return out
+
+# use _HAS_LC_SPLITTER and RecursiveCharacterTextSplitter later in your code:
+# if _HAS_LC_SPLITTER:
+#     splitter = RecursiveCharacterTextSplitter(...)
+# else:
+#     splitter = SimpleCharacterSplitter(...)
+
 # app.py
 import os
 import time
