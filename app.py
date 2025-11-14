@@ -371,6 +371,84 @@ def safe_llm_invoke(llm, prompt: str, max_retries: int = 3):
                 raise e
 
 # -------------------------
+# Document Search Functions (RAG)
+# -------------------------
+def simple_text_search(text: str, query: str, top_k: int = 3) -> List[str]:
+    """Simple keyword-based search as fallback when embeddings are not available."""
+    sentences = []
+    for paragraph in text.split('\n'):
+        for sentence in paragraph.split('.'):
+            sentence = sentence.strip()
+            if sentence and len(sentence) > 10:
+                sentences.append(sentence)
+    
+    query_words = query.lower().split()
+    scored_sentences = []
+    
+    for sentence in sentences:
+        score = 0
+        sentence_lower = sentence.lower()
+        for word in query_words:
+            if len(word) > 3 and word in sentence_lower:
+                score += 1
+        if score > 0:
+            scored_sentences.append((score, sentence))
+    
+    scored_sentences.sort(reverse=True, key=lambda x: x[0])
+    return [sentence for _, sentence in scored_sentences[:top_k]]
+
+def create_embedding_model():
+    """Create embedding model with quota error handling"""
+    try:
+        embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+        test_embedding = embedding_model.embed_query("test")
+        return embedding_model
+    except Exception as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
+            return None
+        else:
+            raise e
+
+def build_or_load_vectorstore_from_chunks(chunks: List[str]):
+    """Create or load a persisted Chroma vectorstore with quota handling"""
+    try:
+        embedding_model = create_embedding_model()
+        
+        if embedding_model is None:
+            return None
+            
+        if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
+            logger.info("Loading existing Chroma vectorstore from %s", PERSIST_DIR)
+            vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
+        else:
+            logger.info("Creating new Chroma vectorstore at %s", PERSIST_DIR)
+            vectorstore = Chroma.from_texts(texts=chunks, embedding=embedding_model, persist_directory=PERSIST_DIR)
+            try:
+                vectorstore.persist()
+            except Exception as e:
+                logger.warning("Chroma persist() failed: %s", e)
+        return vectorstore
+    except Exception as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
+            return None
+        else:
+            logger.exception("Failed to build/load vectorstore: %s", e)
+            raise
+
+def split_text_with_meta(text: str):
+    """Split text into chunks for processing"""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", " ", ""],
+        length_function=len
+    )
+    chunks = splitter.split_text(text)
+    return chunks
+
+# -------------------------
 # Itinerary Generation with Fallbacks
 # -------------------------
 def generate_itinerary(destination: str, duration_days: int, interests: List[str], budget: str = "medium"):
@@ -401,7 +479,6 @@ def generate_itinerary(destination: str, duration_days: int, interests: List[str
         
         itinerary_text = safe_llm_invoke(llm, prompt)
         
-        # Create structured itinerary data
         itinerary_data = {
             'destination': destination,
             'duration_days': duration_days,
@@ -411,7 +488,6 @@ def generate_itinerary(destination: str, duration_days: int, interests: List[str
             'generated_at': datetime.now().isoformat()
         }
         
-        # Save to database
         title = f"{duration_days}-Day {destination} Trip"
         save_itinerary(title, destination, duration_days, itinerary_data)
         
@@ -420,7 +496,6 @@ def generate_itinerary(destination: str, duration_days: int, interests: List[str
         
     except Exception as e:
         logger.error(f"Itinerary generation error: {e}")
-        # Fallback: Create a basic itinerary without AI
         return generate_basic_itinerary(destination, duration_days, interests, budget)
 
 def generate_basic_itinerary(destination: str, duration_days: int, interests: List[str], budget: str = "medium"):
@@ -546,13 +621,14 @@ weather_tool_wrapped = Tool(
 )
 
 # -------------------------
-# Streamlit Navigation
+# Streamlit Navigation - INCLUDING DOCUMENT SEARCH
 # -------------------------
 st.sidebar.title("🌍 Navigation")
 page = st.sidebar.radio("Go to", [
     "Travel Search", 
     "Flight Search", 
     "Itinerary Generator",
+    "Document Search",  # ADDED THIS LINE
     "Saved Data"
 ])
 
@@ -578,7 +654,6 @@ if page == "Travel Search":
                     st.info("🔍 Searching the web...")
                     web_results = web_search_tool(user_query)
                     
-                    # Use Gemini for summarization with safe invocation
                     try:
                         llm = create_chat_llm(temperature=0.5)
                         prompt = f"""
@@ -639,7 +714,6 @@ Make it engaging and practical for travelers:"""
                 try:
                     st.info("⚙️ Processing your request...")
                     
-                    # Extract city for weather if mentioned
                     city = "Goa"
                     if "weather" in agent_query.lower():
                         for word in agent_query.split():
@@ -787,7 +861,6 @@ elif page == "Itinerary Generator":
                 
                 if "error" in itinerary:
                     st.error(f"❌ Itinerary generation failed: {itinerary['error']}")
-                    # Fallback to basic itinerary
                     st.info("🔄 Trying basic itinerary template...")
                     itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
                 else:
@@ -796,7 +869,6 @@ elif page == "Itinerary Generator":
                 st.markdown("### 📅 Your Travel Itinerary")
                 st.write(itinerary['itinerary_text'])
                 
-                # Download option
                 itinerary_text = f"{duration_days}-Day {destination} Itinerary\n\n{itinerary['itinerary_text']}"
                 st.download_button(
                     label="Download Itinerary",
@@ -804,6 +876,131 @@ elif page == "Itinerary Generator":
                     file_name=f"{destination.replace(',', '').replace(' ', '_')}_{duration_days}day_itinerary.txt",
                     mime="text/plain"
                 )
+
+# -------------------------
+# PAGE: Document Search (RAG Functionality)
+# -------------------------
+elif page == "Document Search":
+    st.header("📄 Document-based Travel Assistant")
+    st.write("Upload a travel PDF document and ask questions about its content")
+    
+    # Show quota warning
+    st.info("💡 **Note:** If you see quota errors, the app will automatically use keyword search instead of AI embeddings.")
+    
+    uploaded_pdf = st.file_uploader("Upload your travel PDF", type=["pdf"])
+    if uploaded_pdf:
+        pdf_path = os.path.join(".", uploaded_pdf.name)
+        with open(pdf_path, "wb") as f:
+            f.write(uploaded_pdf.read())
+        st.success(f"✅ Uploaded: {uploaded_pdf.name}")
+
+        text = ""
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for p in pdf.pages:
+                    text += p.extract_text() or ""
+            if not text.strip():
+                st.warning("No text extracted from PDF; maybe it's scanned images. Consider OCR.")
+        except Exception as e:
+            st.error(f"❌ Failed to read PDF: {e}")
+            st.stop()
+
+        # Store the extracted text for fallback search
+        st.session_state['pdf_text'] = text
+        
+        chunks = split_text_with_meta(text)
+        
+        user_query = st.text_input("Enter your question here:", "where to visit in summer in india")
+        if st.button("Get Answer"):
+            if not user_query.strip():
+                st.warning("Please type a question.")
+            else:
+                try:
+                    with st.spinner("Searching document..."):
+                        vectorstore = build_or_load_vectorstore_from_chunks(chunks)
+                        
+                        if vectorstore is None:
+                            # Use keyword-based fallback search
+                            st.info("🔍 Using keyword search (AI embeddings unavailable)")
+                            relevant_chunks = simple_text_search(text, user_query, top_k=5)
+                            
+                            if not relevant_chunks:
+                                st.info("📭 No relevant content found in PDF. Try web search instead.")
+                                web_results = web_search_tool(user_query)
+                                st.markdown("### 🌐 Web Search Results")
+                                st.write(web_results)
+                            else:
+                                context = "\n\n---\n\n".join([f"[Section {i+1}]: {chunk}" for i, chunk in enumerate(relevant_chunks)])
+                                
+                                try:
+                                    llm = create_chat_llm(temperature=0.3)
+                                    prompt = f"""Based on the following document sections, answer the question:
+
+DOCUMENT SECTIONS:
+{context}
+
+QUESTION: {user_query}
+
+Please provide a helpful answer based on the document content:"""
+                                    
+                                    response = safe_llm_invoke(llm, prompt)
+                                    final = response
+                                    st.markdown("### 📖 Answer from Document")
+                                    st.write(final)
+                                    
+                                    with st.expander("View relevant document sections"):
+                                        for i, chunk in enumerate(relevant_chunks):
+                                            st.markdown(f"**Section {i+1}:**")
+                                            st.write(chunk)
+                                            
+                                except Exception as e:
+                                    st.warning(f"AI processing failed, showing relevant sections: {e}")
+                                    st.markdown("### 📚 Relevant Document Sections")
+                                    for i, chunk in enumerate(relevant_chunks):
+                                        st.markdown(f"**Section {i+1}:**")
+                                        st.write(chunk)
+                        else:
+                            # Use vectorstore for semantic search
+                            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                            relevant_docs = retriever.get_relevant_documents(user_query)
+                            
+                            if not relevant_docs:
+                                st.info("📭 No relevant chunks found in PDF.")
+                            else:
+                                context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
+                                try:
+                                    llm = create_chat_llm(temperature=0.3)
+                                    prompt = f"""Use this context to answer the question:
+
+Context:
+{context}
+
+Question: {user_query}
+
+Provide a detailed and helpful answer:"""
+                                    response = safe_llm_invoke(llm, prompt)
+                                    final = response
+                                    st.markdown("### 🧭 Answer from PDF")
+                                    st.write(final)
+                                    
+                                    with st.expander("View retrieved document sections"):
+                                        for i, doc in enumerate(relevant_docs):
+                                            st.markdown(f"**Section {i+1}:**")
+                                            st.write(doc.page_content)
+                                            
+                                except Exception as e:
+                                    st.warning(f"LLM failed, showing raw context: {e}")
+                                    st.markdown("### 📚 Relevant Document Sections")
+                                    for i, doc in enumerate(relevant_docs):
+                                        st.markdown(f"**Section {i+1}:**")
+                                        st.write(doc.page_content)
+
+                except Exception as e:
+                    logger.exception("Document search failed: %s", e)
+                    if "quota" in str(e).lower():
+                        st.error("❌ Embedding quota exceeded. Please try the web search option instead, or upload a smaller document.")
+                    else:
+                        st.error(f"Error during document search: {e}")
 
 # -------------------------
 # PAGE: Saved Data
@@ -846,7 +1043,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("API Status")
     
-    # Check Gemini status
     try:
         llm = create_chat_llm()
         st.success("✅ Gemini API: Working")
