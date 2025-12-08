@@ -233,7 +233,6 @@ def init_database():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Create searches table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,7 +243,6 @@ def init_database():
         )
     ''')
     
-    # Create itineraries table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS itineraries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,20 +254,17 @@ def init_database():
         )
     ''')
     
-    # Create flight searches table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS flight_searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             origin TEXT NOT NULL,
             destination TEXT NOT NULL,
             departure_date TEXT NOT NULL,
-            return_date TEXT,
             results_count INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # Create API usage log table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS api_usage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,13 +301,13 @@ def save_itinerary(title: str, destination: str, duration_days: int, itinerary_d
     conn.commit()
     conn.close()
 
-def save_flight_search(origin: str, destination: str, departure_date: str, return_date: str = None, results_count: int = 0):
-    """Save flight search to database"""
+def save_flight_search(origin: str, destination: str, departure_date: str, results_count: int = 0):
+    """Save flight search to database - ONE WAY ONLY"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO flight_searches (origin, destination, departure_date, return_date, results_count) VALUES (?, ?, ?, ?, ?)",
-        (origin, destination, departure_date, return_date, results_count)
+        "INSERT INTO flight_searches (origin, destination, departure_date, results_count) VALUES (?, ?, ?, ?)",
+        (origin, destination, departure_date, results_count)
     )
     conn.commit()
     conn.close()
@@ -531,6 +526,7 @@ if KEY_VALIDATION['AMADEUS_KEYS']['valid']:
     )
 else:
     amadeus_client = None
+
 # -------------------------
 # Document Search Functions (RAG)
 # -------------------------
@@ -969,6 +965,9 @@ Please provide a well-structured answer:"""
                     logger.exception("Assistant failed: %s", e)
                     st.error(f"Assistant error: {e}")
 
+# -------------------------
+# PAGE: Flight Search (ONE-WAY ONLY)
+# -------------------------
 elif page == "Flight Search":
     st.header("✈️ Flight Search (One-Way Only)")
     
@@ -1056,7 +1055,6 @@ elif page == "Flight Search":
                                 
                                 # Quick booking info
                                 st.caption("ℹ️ Contact airlines directly or visit their website to book this flight")
-
 
 # -------------------------
 # PAGE: Itinerary Generator
@@ -1236,7 +1234,7 @@ Provide a detailed and helpful answer:"""
                         st.error(f"Error during document search: {e}")
 
 # -------------------------
-# PAGE: API Management (NEW)
+# PAGE: API Management
 # -------------------------
 elif page == "API Management":
     st.header("🔐 API Key Management")
@@ -1371,9 +1369,7 @@ elif page == "Saved Data":
                 st.write(f"Destination: {destination} | Duration: {duration_days} days")
                 st.write(f"Created: {created_at}")
                 
-                # View button for itineraries
                 if st.button(f"View Details", key=f"view_{itinerary_id}"):
-                    # In a real implementation, you would fetch and display the full itinerary
                     st.info(f"Full itinerary for {title} would be displayed here. Implement full view functionality.")
                 st.write("---")
     
