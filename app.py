@@ -533,8 +533,83 @@ if KEY_VALIDATION['AMADEUS_KEYS']['valid']:
 else:
     amadeus_client = None
 
-# ... [Rest of your code remains the same for Document Search, LLM creation, etc.]
-# Just replace the existing API calls with secure_requests_get/post where appropriate
+# -------------------------
+# Document Search Functions (RAG)
+# -------------------------
+def simple_text_search(text: str, query: str, top_k: int = 3) -> List[str]:
+    """Simple keyword-based search as fallback when embeddings are not available."""
+    sentences = []
+    for paragraph in text.split('\n'):
+        for sentence in paragraph.split('.'):
+            sentence = sentence.strip()
+            if sentence and len(sentence) > 10:
+                sentences.append(sentence)
+    
+    query_words = query.lower().split()
+    scored_sentences = []
+    
+    for sentence in sentences:
+        score = 0
+        sentence_lower = sentence.lower()
+        for word in query_words:
+            if len(word) > 3 and word in sentence_lower:
+                score += 1
+        if score > 0:
+            scored_sentences.append((score, sentence))
+    
+    scored_sentences.sort(reverse=True, key=lambda x: x[0])
+    return [sentence for _, sentence in scored_sentences[:top_k]]
+
+def create_embedding_model():
+    """Create embedding model with quota error handling"""
+    try:
+        embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+        test_embedding = embedding_model.embed_query("test")
+        return embedding_model
+    except Exception as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
+            return None
+        else:
+            raise e
+
+def build_or_load_vectorstore_from_chunks(chunks: List[str]):
+    """Create or load a persisted Chroma vectorstore with quota handling"""
+    try:
+        embedding_model = create_embedding_model()
+        
+        if embedding_model is None:
+            return None
+            
+        if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
+            logger.info("Loading existing Chroma vectorstore from %s", PERSIST_DIR)
+            vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
+        else:
+            logger.info("Creating new Chroma vectorstore at %s", PERSIST_DIR)
+            vectorstore = Chroma.from_texts(texts=chunks, embedding=embedding_model, persist_directory=PERSIST_DIR)
+            try:
+                vectorstore.persist()
+            except Exception as e:
+                logger.warning("Chroma persist() failed: %s", e)
+        return vectorstore
+    except Exception as e:
+        if "quota" in str(e).lower() or "429" in str(e):
+            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
+            return None
+        else:
+            logger.exception("Failed to build/load vectorstore: %s", e)
+            raise
+
+def split_text_with_meta(text: str):
+    """Split text into chunks for processing"""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", " ", ""],
+        length_function=len
+    )
+    chunks = splitter.split_text(text)
+    return chunks
 
 # -------------------------
 # Enhanced LLM Creation with Better Rate Limiting
@@ -591,6 +666,115 @@ def safe_llm_invoke(llm, prompt: str, max_retries: int = 3):
                 raise e
 
 # -------------------------
+# Itinerary Generation with Fallbacks
+# -------------------------
+def generate_itinerary(destination: str, duration_days: int, interests: List[str], budget: str = "medium"):
+    """Generate a travel itinerary using AI with fallbacks"""
+    cache_key = f"itinerary_{destination}_{duration_days}_{'_'.join(interests)}_{budget}"
+    cached_response = get_cached_response(cache_key)
+    if cached_response:
+        return cached_response
+    
+    try:
+        llm = create_chat_llm(temperature=0.7)
+        
+        prompt = f"""
+        Create a detailed {duration_days}-day travel itinerary for {destination}.
+        
+        Traveler Interests: {', '.join(interests)}
+        Budget Level: {budget}
+        
+        Please structure the itinerary with:
+        1. Daily schedule with morning, afternoon, and evening activities
+        2. Recommended restaurants/cafes for each day
+        3. Transportation tips between locations
+        4. Estimated costs where possible
+        5. Cultural highlights and must-see attractions
+        
+        Make it practical, engaging, and tailored to the interests mentioned.
+        """
+        
+        itinerary_text = safe_llm_invoke(llm, prompt)
+        
+        itinerary_data = {
+            'destination': destination,
+            'duration_days': duration_days,
+            'interests': interests,
+            'budget': budget,
+            'itinerary_text': itinerary_text,
+            'generated_at': datetime.now().isoformat()
+        }
+        
+        title = f"{duration_days}-Day {destination} Trip"
+        save_itinerary(title, destination, duration_days, itinerary_data)
+        
+        set_cached_response(cache_key, itinerary_data)
+        return itinerary_data
+        
+    except Exception as e:
+        logger.error(f"Itinerary generation error: {e}")
+        return generate_basic_itinerary(destination, duration_days, interests, budget)
+
+def generate_basic_itinerary(destination: str, duration_days: int, interests: List[str], budget: str = "medium"):
+    """Generate a basic itinerary without AI when rate limits are hit"""
+    st.info("🤖 Using smart itinerary template (AI service limited)")
+    
+    basic_itinerary = f"""
+# {duration_days}-Day {destination} Travel Itinerary
+
+## Traveler Profile
+- **Interests**: {', '.join(interests)}
+- **Budget**: {budget}
+- **Duration**: {duration_days} days
+
+## Quick Travel Tips
+1. **Best Time to Visit**: Check local weather patterns
+2. **Transport**: Research local transport options
+3. **Accommodation**: Book in advance for better rates
+4. **Food**: Try local cuisine and street food
+5. **Culture**: Respect local customs and traditions
+
+## Suggested Daily Structure
+"""
+    
+    for day in range(1, duration_days + 1):
+        basic_itinerary += f"""
+### Day {day}
+**Morning**: Explore local attractions
+**Afternoon**: {', '.join(interests)} activities  
+**Evening**: Local dining experience
+
+"""
+    
+    basic_itinerary += """
+## Budget Tips
+- Look for free walking tours
+- Use public transportation
+- Eat at local markets
+- Book activities in advance for discounts
+
+## Emergency Contacts
+- Local emergency: 112 (most countries)
+- Your embassy/consulate
+- Travel insurance provider
+"""
+    
+    itinerary_data = {
+        'destination': destination,
+        'duration_days': duration_days,
+        'interests': interests,
+        'budget': budget,
+        'itinerary_text': basic_itinerary,
+        'generated_at': datetime.now().isoformat(),
+        'ai_generated': False
+    }
+    
+    title = f"{duration_days}-Day {destination} Trip (Basic)"
+    save_itinerary(title, destination, duration_days, itinerary_data)
+    
+    return itinerary_data
+
+# -------------------------
 # Weather Tool with Secure API Calls
 # -------------------------
 def weather_tool(city: str) -> str:
@@ -619,8 +803,30 @@ def weather_tool(city: str) -> str:
         logger.exception("Weather tool failed: %s", e)
         return f"Weather service error: {e}"
 
+def web_search_tool(query: str) -> str:
+    """Run a DuckDuckGoSearchRun search and return a concise combined string."""
+    try:
+        ddg = DuckDuckGoSearchRun()
+        results = ddg.run(query)
+        return results if isinstance(results, str) else str(results)
+    except Exception as e:
+        logger.exception("Web search failed: %s", e)
+        return f"Web search error: {e}"
+
+# Wrap tools for LangChain Agent
+web_tool = Tool(
+    name="web_search",
+    func=web_search_tool,
+    description="Search the web for travel information. Input should be a query string."
+)
+weather_tool_wrapped = Tool(
+    name="weather",
+    func=weather_tool,
+    description="Return weather for a city. Input is a city name."
+)
+
 # -------------------------
-# Streamlit Navigation - Add API Management Page
+# Streamlit Navigation
 # -------------------------
 st.sidebar.title("🌍 Navigation")
 page = st.sidebar.radio("Go to", [
@@ -628,39 +834,410 @@ page = st.sidebar.radio("Go to", [
     "Flight Search", 
     "Itinerary Generator",
     "Document Search",
-    "API Management",  # NEW PAGE
+    "API Management",
     "Saved Data"
 ])
 
-# ... [Rest of your existing pages remain the same until the new API Management page]
+# -------------------------
+# PAGE: Travel Search
+# -------------------------
+if page == "Travel Search":
+    st.header("🔍 Travel Information Search")
+    
+    option = st.radio(
+        "Search type:",
+        ("Web Search", "Weather Check", "Smart Assistant")
+    )
+    
+    if option == "Web Search":
+        user_query = st.text_input("Where would you like to go or what do you want to know?", "where should I visit in goa")
+        
+        if st.button("Search"):
+            if not user_query.strip():
+                st.warning("Please enter a travel query.")
+            else:
+                try:
+                    st.info("🔍 Searching the web...")
+                    web_results = web_search_tool(user_query)
+                    
+                    try:
+                        llm = create_chat_llm(temperature=0.5)
+                        prompt = f"""
+You are a helpful travel assistant. Please analyze the following search results and provide a comprehensive, well-organized answer to the user's question.
+
+SEARCH RESULTS:
+{web_results}
+
+USER'S QUESTION: {user_query}
+
+Please provide a detailed answer with these sections if applicable:
+1. Top attractions/places to visit
+2. Best time to visit
+3. Travel tips
+4. Local highlights
+
+Make it engaging and practical for travelers:"""
+                        final = safe_llm_invoke(llm, prompt)
+                        st.markdown("### 🧭 Travel Insights")
+                        st.write(final)
+                        save_search(user_query, "web_search", final[:1000])
+                        
+                    except Exception as e:
+                        logger.warning(f"Gemini summarization failed, showing raw results: {e}")
+                        st.markdown("### 🔍 Search Results (Direct):")
+                        st.write(web_results)
+                        save_search(user_query, "web_search", web_results[:1000])
+                        
+                except Exception as e:
+                    logger.exception("Web search error: %s", e)
+                    st.error(f"❌ Search error: {e}")
+    
+    elif option == "Weather Check":
+        city = st.text_input("Enter city name:", "Goa")
+        if st.button("Get Weather"):
+            if not city.strip():
+                st.warning("Please enter a city name.")
+            else:
+                try:
+                    result = weather_tool(city)
+                    if result.lower().startswith("city not found"):
+                        st.error(result)
+                    else:
+                        st.markdown(f"### 🌤 Weather in **{city.title()}**")
+                        st.write(result)
+                        save_search(city, "weather_check", result)
+                except Exception as e:
+                    logger.exception("Weather fetch failed: %s", e)
+                    st.error(f"❌ Error fetching weather: {e}")
+    
+    elif option == "Smart Assistant":
+        agent_query = st.text_input("Ask anything (e.g., 'Weather in Tokyo and top attractions')", 
+                                   "Best places to visit in Goa and current weather")
+        if st.button("Run Assistant"):
+            if not agent_query.strip():
+                st.warning("Please enter a query.")
+            else:
+                try:
+                    st.info("⚙️ Processing your request...")
+                    
+                    city = "Goa"
+                    if "weather" in agent_query.lower():
+                        for word in agent_query.split():
+                            if word.lower() not in ['weather', 'in', 'and', 'the']:
+                                city = word
+                                break
+                    
+                    weather_info = ""
+                    if "weather" in agent_query.lower():
+                        weather_info = weather_tool(city)
+                    
+                    search_query = agent_query
+                    if "weather" in agent_query.lower():
+                        search_query = agent_query.replace("weather", "").replace("Weather", "").strip()
+                    
+                    search_results = web_search_tool(search_query)
+                    
+                    try:
+                        llm = create_chat_llm(temperature=0.3)
+                        
+                        combined_context = f"WEB SEARCH RESULTS:\n{search_results}"
+                        if weather_info:
+                            combined_context += f"\n\nWEATHER INFORMATION:\n{weather_info}"
+                        
+                        prompt = f"""As a knowledgeable travel assistant, provide comprehensive information based on the following data:
+
+{combined_context}
+
+USER'S QUESTION: {agent_query}
+
+Please provide a well-structured answer:"""
+                        
+                        result = safe_llm_invoke(llm, prompt)
+                        st.markdown("### 🤖 Travel Assistance")
+                        st.write(result)
+                        save_search(agent_query, "smart_assistant", result[:1000])
+                        
+                    except Exception as e:
+                        st.warning(f"Gemini processing failed: {e}")
+                        st.markdown("### 🔍 Raw Results")
+                        if weather_info:
+                            st.markdown("**🌤 Weather:**")
+                            st.write(weather_info)
+                        st.markdown("**🔍 Web Search:**")
+                        st.write(search_results)
+                        save_search(agent_query, "smart_assistant", f"Weather: {weather_info}\nSearch: {search_results}"[:1000])
+                        
+                except Exception as e:
+                    logger.exception("Assistant failed: %s", e)
+                    st.error(f"Assistant error: {e}")
+
+# -------------------------
+# PAGE: Flight Search
+# -------------------------
+elif page == "Flight Search":
+    st.header("✈️ Flight Search (Amadeus)")
+    
+    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
+        st.warning("⚠️ Amadeus API credentials not configured or invalid. Please add AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET to your secrets.")
+    elif amadeus_client is None:
+        st.error("❌ Amadeus client initialization failed. Check your API credentials.")
+    else:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            origin = st.text_input("From (Airport Code)", "DEL", max_chars=3).upper()
+            destination = st.text_input("To (Airport Code)", "GOI", max_chars=3).upper()
+        
+        with col2:
+            departure_date = st.date_input("Departure Date", datetime.now() + timedelta(days=7))
+            return_date = st.date_input("Return Date (Optional)", datetime.now() + timedelta(days=14))
+        
+        adults = st.number_input("Adults", min_value=1, max_value=9, value=1)
+        
+        if st.button("Search Flights"):
+            if not origin or not destination:
+                st.warning("Please enter origin and destination airport codes.")
+            else:
+                with st.spinner("Searching for flights..."):
+                    departure_str = departure_date.strftime("%Y-%m-%d")
+                    return_str = return_date.strftime("%Y-%m-%d") if return_date else None
+                    
+                    flights = amadeus_client.search_flights(
+                        origin=origin,
+                        destination=destination,
+                        departure_date=departure_str,
+                        return_date=return_str,
+                        adults=adults
+                    )
+                    
+                    if "error" in flights:
+                        st.error(f"❌ Flight search failed: {flights['error']}")
+                    elif not flights:
+                        st.info("No flights found for your search criteria.")
+                    else:
+                        st.success(f"Found {len(flights)} flights")
+                        
+                        for i, flight in enumerate(flights):
+                            with st.expander(f"Flight {i+1}: {flight['price']} {flight['currency']}"):
+                                st.write(f"**Price:** {flight['price']} {flight['currency']}")
+                                
+                                for j, itinerary in enumerate(flight['itineraries']):
+                                    st.write(f"**Segment {j+1}** ({itinerary['duration']})")
+                                    
+                                    for segment in itinerary['segments']:
+                                        dep_time = datetime.fromisoformat(segment['departure']['time'].replace('Z', '+00:00'))
+                                        arr_time = datetime.fromisoformat(segment['arrival']['time'].replace('Z', '+00:00'))
+                                        
+                                        st.write(f"🛫 {segment['departure']['airport']} → 🛬 {segment['arrival']['airport']}")
+                                        st.write(f"Time: {dep_time.strftime('%H:%M')} - {arr_time.strftime('%H:%M')}")
+                                        st.write(f"Airline: {segment['airline']} Flight {segment['flight_number']}")
+                                        st.write("---")
+
+# -------------------------
+# PAGE: Itinerary Generator
+# -------------------------
+elif page == "Itinerary Generator":
+    st.header("🗓️ AI Itinerary Generator")
+    
+    st.info("💡 **Note**: Free tier has limited AI requests. Basic templates will be used if limits are reached.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        destination = st.text_input("Destination", "Goa, India")
+        duration_days = st.number_input("Trip Duration (days)", min_value=1, max_value=30, value=5)
+    
+    with col2:
+        interests = st.multiselect(
+            "Your Interests",
+            ["Beaches", "History", "Food", "Adventure", "Culture", "Shopping", "Nature", "Nightlife"],
+            default=["Beaches", "Food"]
+        )
+        budget = st.selectbox("Budget", ["low", "medium", "high"])
+    
+    use_ai = st.checkbox("Use AI for detailed itinerary (may hit rate limits)", value=True)
+    
+    if st.button("Generate Itinerary"):
+        if not destination:
+            st.warning("Please enter a destination.")
+        else:
+            with st.spinner("Creating your personalized itinerary..."):
+                if use_ai:
+                    itinerary = generate_itinerary(destination, duration_days, interests, budget)
+                else:
+                    itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
+                
+                if "error" in itinerary:
+                    st.error(f"❌ Itinerary generation failed: {itinerary['error']}")
+                    st.info("🔄 Trying basic itinerary template...")
+                    itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
+                else:
+                    st.success("✅ Itinerary generated successfully!")
+                    
+                st.markdown("### 📅 Your Travel Itinerary")
+                st.write(itinerary['itinerary_text'])
+                
+                itinerary_text = f"{duration_days}-Day {destination} Itinerary\n\n{itinerary['itinerary_text']}"
+                st.download_button(
+                    label="Download Itinerary",
+                    data=itinerary_text,
+                    file_name=f"{destination.replace(',', '').replace(' ', '_')}_{duration_days}day_itinerary.txt",
+                    mime="text/plain"
+                )
+
+# -------------------------
+# PAGE: Document Search (RAG Functionality)
+# -------------------------
+elif page == "Document Search":
+    st.header("📄 Document-based Travel Assistant")
+    st.write("Upload a travel PDF document and ask questions about its content")
+    
+    # Show quota warning
+    st.info("💡 **Note:** If you see quota errors, the app will automatically use keyword search instead of AI embeddings.")
+    
+    uploaded_pdf = st.file_uploader("Upload your travel PDF", type=["pdf"])
+    if uploaded_pdf:
+        pdf_path = os.path.join(".", uploaded_pdf.name)
+        with open(pdf_path, "wb") as f:
+            f.write(uploaded_pdf.read())
+        st.success(f"✅ Uploaded: {uploaded_pdf.name}")
+
+        text = ""
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for p in pdf.pages:
+                    text += p.extract_text() or ""
+            if not text.strip():
+                st.warning("No text extracted from PDF; maybe it's scanned images. Consider OCR.")
+        except Exception as e:
+            st.error(f"❌ Failed to read PDF: {e}")
+            st.stop()
+
+        # Store the extracted text for fallback search
+        st.session_state['pdf_text'] = text
+        
+        chunks = split_text_with_meta(text)
+        
+        user_query = st.text_input("Enter your question here:", "where to visit in summer in india")
+        if st.button("Get Answer"):
+            if not user_query.strip():
+                st.warning("Please type a question.")
+            else:
+                try:
+                    with st.spinner("Searching document..."):
+                        vectorstore = build_or_load_vectorstore_from_chunks(chunks)
+                        
+                        if vectorstore is None:
+                            # Use keyword-based fallback search
+                            st.info("🔍 Using keyword search (AI embeddings unavailable)")
+                            relevant_chunks = simple_text_search(text, user_query, top_k=5)
+                            
+                            if not relevant_chunks:
+                                st.info("📭 No relevant content found in PDF. Try web search instead.")
+                                web_results = web_search_tool(user_query)
+                                st.markdown("### 🌐 Web Search Results")
+                                st.write(web_results)
+                            else:
+                                context = "\n\n---\n\n".join([f"[Section {i+1}]: {chunk}" for i, chunk in enumerate(relevant_chunks)])
+                                
+                                try:
+                                    llm = create_chat_llm(temperature=0.3)
+                                    prompt = f"""Based on the following document sections, answer the question:
+
+DOCUMENT SECTIONS:
+{context}
+
+QUESTION: {user_query}
+
+Please provide a helpful answer based on the document content:"""
+                                    
+                                    response = safe_llm_invoke(llm, prompt)
+                                    final = response
+                                    st.markdown("### 📖 Answer from Document")
+                                    st.write(final)
+                                    
+                                    with st.expander("View relevant document sections"):
+                                        for i, chunk in enumerate(relevant_chunks):
+                                            st.markdown(f"**Section {i+1}:**")
+                                            st.write(chunk)
+                                            
+                                except Exception as e:
+                                    st.warning(f"AI processing failed, showing relevant sections: {e}")
+                                    st.markdown("### 📚 Relevant Document Sections")
+                                    for i, chunk in enumerate(relevant_chunks):
+                                        st.markdown(f"**Section {i+1}:**")
+                                        st.write(chunk)
+                        else:
+                            # Use vectorstore for semantic search
+                            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                            relevant_docs = retriever.get_relevant_documents(user_query)
+                            
+                            if not relevant_docs:
+                                st.info("📭 No relevant chunks found in PDF.")
+                            else:
+                                context = "\n\n---\n\n".join([f"[Chunk {i+1}]: {d.page_content}" for i, d in enumerate(relevant_docs)])
+                                try:
+                                    llm = create_chat_llm(temperature=0.3)
+                                    prompt = f"""Use this context to answer the question:
+
+Context:
+{context}
+
+Question: {user_query}
+
+Provide a detailed and helpful answer:"""
+                                    response = safe_llm_invoke(llm, prompt)
+                                    final = response
+                                    st.markdown("### 🧭 Answer from PDF")
+                                    st.write(final)
+                                    
+                                    with st.expander("View retrieved document sections"):
+                                        for i, doc in enumerate(relevant_docs):
+                                            st.markdown(f"**Section {i+1}:**")
+                                            st.write(doc.page_content)
+                                            
+                                except Exception as e:
+                                    st.warning(f"LLM failed, showing raw context: {e}")
+                                    st.markdown("### 📚 Relevant Document Sections")
+                                    for i, doc in enumerate(relevant_docs):
+                                        st.markdown(f"**Section {i+1}:**")
+                                        st.write(doc.page_content)
+
+                except Exception as e:
+                    logger.exception("Document search failed: %s", e)
+                    if "quota" in str(e).lower():
+                        st.error("❌ Embedding quota exceeded. Please try the web search option instead, or upload a smaller document.")
+                    else:
+                        st.error(f"Error during document search: {e}")
 
 # -------------------------
 # PAGE: API Management (NEW)
 # -------------------------
-if page == "API Management":
-
+elif page == "API Management":
     st.header("🔐 API Key Management")
-
+    
     st.info("""
     **Security Note:** API keys are securely stored in Streamlit Secrets.
     Never expose API keys in your code or version control.
     """)
-
-    # --- API Key Status ---
+    
+    # Display API Key Validation Status
     st.subheader("API Key Status")
-
+    
     col1, col2 = st.columns(2)
-
+    
     with col1:
         for key_name, validation in KEY_VALIDATION.items():
             if validation['valid']:
-                st.success(f"{key_name}: Valid")
+                st.success(f"**{key_name}**: {validation['message']}")
+            elif "Not configured" in validation['message']:
+                st.warning(f"**{key_name}**: {validation['message']}")
             else:
-                st.error(f"{key_name}: Invalid")
-
-    # --- API Usage Statistics ---
+                st.error(f"**{key_name}**: {validation['message']}")
+    
+    # Display API Usage Statistics
     st.subheader("API Usage Statistics")
-
+    
     usage_stats = api_manager.get_usage_stats()
     if usage_stats:
         for key_name, stats in usage_stats.items():
@@ -670,11 +1247,11 @@ if page == "API Management":
                 st.write(f"  • Errors: {stats['errors']}")
                 st.write(f"  • Last used: {stats['last_used']}")
                 st.write("---")
-
-    # --- Database-level API usage ---
+    
+    # Database API Usage Stats
     st.subheader("Database API Usage (Last 7 Days)")
     db_stats = get_api_usage_stats(7)
-
+    
     if db_stats:
         for api_name, total_calls, avg_response_time, error_count in db_stats:
             st.write(f"**{api_name}**:")
@@ -726,6 +1303,7 @@ if page == "API Management":
     if st.button("🔄 Run API Health Check"):
         with st.spinner("Checking API health..."):
             new_validation = api_manager.validate_keys()
+            
             st.subheader("Health Check Results")
             for key_name, validation in new_validation.items():
                 if validation['valid']:
@@ -735,10 +1313,52 @@ if page == "API Management":
                 else:
                     st.error(f"❌ **{key_name}**: {validation['message']}")
 
-# ... [Rest of your existing pages continue]
+# -------------------------
+# PAGE: Saved Data
+# -------------------------
+elif page == "Saved Data":
+    st.header("💾 Saved Data")
+    
+    tab1, tab2, tab3 = st.tabs(["Recent Searches", "Saved Itineraries", "Flight Searches"])
+    
+    with tab1:
+        st.subheader("Recent Searches")
+        recent_searches = get_recent_searches(20)
+        
+        if not recent_searches:
+            st.info("No searches saved yet.")
+        else:
+            for query, search_type, created_at in recent_searches:
+                st.write(f"**{search_type.replace('_', ' ').title()}**")
+                st.write(f"Query: {query}")
+                st.write(f"Time: {created_at}")
+                st.write("---")
+    
+    with tab2:
+        st.subheader("Saved Itineraries")
+        itineraries = get_saved_itineraries()
+        
+        if not itineraries:
+            st.info("No itineraries saved yet.")
+        else:
+            for itinerary_id, title, destination, duration_days, created_at in itineraries:
+                st.write(f"**{title}**")
+                st.write(f"Destination: {destination} | Duration: {duration_days} days")
+                st.write(f"Created: {created_at}")
+                
+                # View button for itineraries
+                if st.button(f"View Details", key=f"view_{itinerary_id}"):
+                    # In a real implementation, you would fetch and display the full itinerary
+                    st.info(f"Full itinerary for {title} would be displayed here. Implement full view functionality.")
+                st.write("---")
+    
+    with tab3:
+        st.subheader("Flight Search History")
+        # Placeholder for flight search history
+        st.info("Flight search history display would be implemented here.")
 
 # -------------------------
-# Sidebar with Enhanced API Status
+# Sidebar with Info
 # -------------------------
 with st.sidebar:
     st.markdown("---")
@@ -783,3 +1403,18 @@ with st.sidebar:
     - 🚨 Error monitoring
     - ⚡ Rate limiting
     """)
+    
+    # Quick stats
+    st.markdown("---")
+    st.subheader("Quick Stats")
+    
+    recent_searches = get_recent_searches(5)
+    if recent_searches:
+        st.write("Recent searches:")
+        for query, search_type, created_at in recent_searches[:3]:
+            st.caption(f"🔍 {search_type}: {query[:20]}...")
+    else:
+        st.caption("No recent searches")
+    
+    st.markdown("---")
+    st.caption(f"v1.0.0 • Last updated: {datetime.now().strftime('%Y-%m-%d')}")
