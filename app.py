@@ -441,12 +441,24 @@ class AmadeusClient:
             return None
     
     def search_flights(self, origin: str, destination: str, departure_date: str, adults: int = 1):
-        """Search for ONE-WAY flights using Amadeus API"""
+        """
+        Searches for one-way flights using the Amadeus Flight Offers API.
+
+        Parameters:
+            origin (str): 3-letter IATA origin airport code.
+            destination (str): 3-letter IATA destination airport code.
+            departure_date (str): Date in YYYY-MM-DD format.
+            adults (int): Number of adult passengers.
+
+        Returns:
+            List[Dict] or Dict: Parsed flight data or an error message.
+        """
+
         try:
             token = self.get_access_token()
             if not token:
                 return {"error": "Failed to authenticate with Amadeus API"}
-            
+
             url = "https://test.api.amadeus.com/v2/shopping/flight-offers"
             headers = {
                 'Authorization': f'Bearer {token}'
@@ -456,12 +468,12 @@ class AmadeusClient:
                 'destinationLocationCode': destination.upper(),
                 'departureDate': departure_date,
                 'adults': adults,
-                'max': 10,
-                'oneWay': 'true'  # Force one-way flights only
+                'max': 10
+                # ❌ Removed invalid oneWay parameter
             }
-            
+
             response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus", timeout=10)
-            
+
             if response.status_code == 200:
                 data = response.json()
                 flights = self._parse_flight_data(data)
@@ -469,12 +481,12 @@ class AmadeusClient:
                 return flights
             else:
                 logger.error(f"Amadeus API error: {response.status_code} - {response.text}")
-                return {"error": f"API error: {response.status_code}"}
-                
+                return {"error": f"API error: {response.status_code} - {response.text}"}
+
         except Exception as e:
             logger.error(f"Flight search error: {e}")
             return {"error": str(e)}
-    
+
     def _parse_flight_data(self, data: Dict) -> List[Dict]:
         """Parse flight data from Amadeus response"""
         flights = []
