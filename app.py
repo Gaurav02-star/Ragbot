@@ -407,7 +407,7 @@ def secure_requests_post(url, data=None, json=None, headers=None, api_name="Unkn
         raise e
 
 # -------------------------
-# Amadeus Flight API Integration with Secure Wrapper
+# Amadeus Flight API Integration - ONE WAY ONLY
 # -------------------------
 class AmadeusClient:
     def __init__(self, client_id: str, client_secret: str):
@@ -445,8 +445,8 @@ class AmadeusClient:
             logger.error(f"Failed to get Amadeus access token: {e}")
             return None
     
-    def search_flights(self, origin: str, destination: str, departure_date: str, return_date: str = None, adults: int = 1):
-        """Search for flights using Amadeus API"""
+    def search_flights(self, origin: str, destination: str, departure_date: str, adults: int = 1):
+        """Search for ONE-WAY flights using Amadeus API"""
         try:
             token = self.get_access_token()
             if not token:
@@ -461,18 +461,16 @@ class AmadeusClient:
                 'destinationLocationCode': destination.upper(),
                 'departureDate': departure_date,
                 'adults': adults,
-                'max': 10
+                'max': 10,
+                'oneWay': 'true'  # Force one-way flights only
             }
-            
-            if return_date:
-                params['returnDate'] = return_date
             
             response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus", timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
                 flights = self._parse_flight_data(data)
-                save_flight_search(origin, destination, departure_date, return_date, len(flights))
+                save_flight_search(origin, destination, departure_date, len(flights))
                 return flights
             else:
                 logger.error(f"Amadeus API error: {response.status_code} - {response.text}")
@@ -494,6 +492,7 @@ class AmadeusClient:
                 'id': offer['id'],
                 'price': offer['price']['total'],
                 'currency': offer['price']['currency'],
+                'one_way': True,  # All flights are one-way now
                 'itineraries': []
             }
             
@@ -532,7 +531,6 @@ if KEY_VALIDATION['AMADEUS_KEYS']['valid']:
     )
 else:
     amadeus_client = None
-
 # -------------------------
 # Document Search Functions (RAG)
 # -------------------------
@@ -971,11 +969,8 @@ Please provide a well-structured answer:"""
                     logger.exception("Assistant failed: %s", e)
                     st.error(f"Assistant error: {e}")
 
-# -------------------------
-# PAGE: Flight Search
-# -------------------------
 elif page == "Flight Search":
-    st.header("✈️ Flight Search (Amadeus)")
+    st.header("✈️ Flight Search (One-Way Only)")
     
     if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
         st.warning("⚠️ Amadeus API credentials not configured or invalid. Please add AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET to your secrets.")
@@ -985,53 +980,83 @@ elif page == "Flight Search":
         col1, col2 = st.columns(2)
         
         with col1:
-            origin = st.text_input("From (Airport Code)", "DEL", max_chars=3).upper()
-            destination = st.text_input("To (Airport Code)", "GOI", max_chars=3).upper()
+            origin = st.text_input("From (Airport Code)", "DEL", max_chars=3, 
+                                  help="Enter 3-letter airport code, e.g., DEL for Delhi, BOM for Mumbai")
+            destination = st.text_input("To (Airport Code)", "GOI", max_chars=3,
+                                       help="Enter 3-letter airport code, e.g., GOI for Goa, BLR for Bengaluru")
         
         with col2:
-            departure_date = st.date_input("Departure Date", datetime.now() + timedelta(days=7))
-            return_date = st.date_input("Return Date (Optional)", datetime.now() + timedelta(days=14))
+            departure_date = st.date_input("Departure Date", 
+                                          min_value=datetime.now().date(),
+                                          value=datetime.now() + timedelta(days=7))
+            adults = st.number_input("Number of Passengers", min_value=1, max_value=9, value=1)
         
-        adults = st.number_input("Adults", min_value=1, max_value=9, value=1)
+        st.info("ℹ️ Searching for one-way flights only")
         
         if st.button("Search Flights"):
             if not origin or not destination:
                 st.warning("Please enter origin and destination airport codes.")
+            elif origin == destination:
+                st.error("Origin and destination cannot be the same.")
             else:
-                with st.spinner("Searching for flights..."):
+                with st.spinner(f"Searching flights from {origin} to {destination}..."):
                     departure_str = departure_date.strftime("%Y-%m-%d")
-                    return_str = return_date.strftime("%Y-%m-%d") if return_date else None
                     
                     flights = amadeus_client.search_flights(
                         origin=origin,
                         destination=destination,
                         departure_date=departure_str,
-                        return_date=return_str,
                         adults=adults
                     )
                     
                     if "error" in flights:
                         st.error(f"❌ Flight search failed: {flights['error']}")
                     elif not flights:
-                        st.info("No flights found for your search criteria.")
+                        st.info(f"No one-way flights found from {origin} to {destination} on {departure_date.strftime('%B %d, %Y')}")
                     else:
-                        st.success(f"Found {len(flights)} flights")
+                        st.success(f"✅ Found {len(flights)} one-way flights")
                         
+                        # Sort by price (lowest first)
+                        flights.sort(key=lambda x: float(x['price']))
+                        
+                        # Display summary
+                        st.subheader(f"Flights from {origin} to {destination}")
+                        st.write(f"**Date:** {departure_date.strftime('%A, %B %d, %Y')}")
+                        st.write(f"**Passengers:** {adults} adult(s)")
+                        st.write(f"**Total options:** {len(flights)} flights")
+                        
+                        # Display flights
                         for i, flight in enumerate(flights):
-                            with st.expander(f"Flight {i+1}: {flight['price']} {flight['currency']}"):
-                                st.write(f"**Price:** {flight['price']} {flight['currency']}")
+                            with st.expander(f"Flight {i+1}: ₹{flight['price']} {flight['currency']} (One-Way)", expanded=(i==0)):
+                                st.write(f"**Price:** ₹{flight['price']} {flight['currency']}")
+                                st.write(f"**Type:** One-Way Flight")
                                 
                                 for j, itinerary in enumerate(flight['itineraries']):
-                                    st.write(f"**Segment {j+1}** ({itinerary['duration']})")
+                                    total_duration = itinerary['duration']
+                                    st.write(f"**Duration:** {total_duration}")
                                     
                                     for segment in itinerary['segments']:
                                         dep_time = datetime.fromisoformat(segment['departure']['time'].replace('Z', '+00:00'))
                                         arr_time = datetime.fromisoformat(segment['arrival']['time'].replace('Z', '+00:00'))
                                         
-                                        st.write(f"🛫 {segment['departure']['airport']} → 🛬 {segment['arrival']['airport']}")
-                                        st.write(f"Time: {dep_time.strftime('%H:%M')} - {arr_time.strftime('%H:%M')}")
-                                        st.write(f"Airline: {segment['airline']} Flight {segment['flight_number']}")
+                                        col_a, col_b, col_c = st.columns([2, 1, 2])
+                                        with col_a:
+                                            st.write(f"**Departure:**")
+                                            st.write(f"{segment['departure']['airport']}")
+                                            st.write(f"{dep_time.strftime('%H:%M')}")
+                                        with col_b:
+                                            st.write("→")
+                                        with col_c:
+                                            st.write(f"**Arrival:**")
+                                            st.write(f"{segment['arrival']['airport']}")
+                                            st.write(f"{arr_time.strftime('%H:%M')}")
+                                        
+                                        st.write(f"**Airline:** {segment['airline']} Flight {segment['flight_number']}")
                                         st.write("---")
+                                
+                                # Quick booking info
+                                st.caption("ℹ️ Contact airlines directly or visit their website to book this flight")
+
 
 # -------------------------
 # PAGE: Itinerary Generator
