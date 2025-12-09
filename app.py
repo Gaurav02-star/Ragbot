@@ -188,7 +188,7 @@ EMBEDDING_MODEL_NAME = "models/text-embedding-004"  # ✅ FIXED
 CHAT_MODEL_CANDIDATES = [
     "gemini-1.5-flash-latest"
     "gemini-1.5-pro-latest",    # ✅ FIXED
-    "gemini-1.0-pro-latest",    # ✅ FIXED
+    # ✅ FIXED
     
 ]
 CHUNK_SIZE = 500
