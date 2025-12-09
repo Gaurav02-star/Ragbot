@@ -465,7 +465,7 @@ class VisionRecognition:
                         st.write(f"- {name}")
                 
                 # Prioritize vision-capable models
-                vision_models_patterns = [
+                vision_model_patterns = [
                     "gemini-1.5-pro-latest",      # Most capable
                     "gemini-1.0-pro-vision-latest", # Vision-specific
                     "gemini-1.0-pro-latest",      # General purpose
