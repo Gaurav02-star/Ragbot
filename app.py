@@ -445,20 +445,84 @@ class VisionRecognition:
     def __init__(self, gemini_api_key: str = None):
         self.gemini_api_key = gemini_api_key
         self.model = None
+        self.model_name = None
         
         if gemini_api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
-                logger.info("✅ Gemini Vision API initialized")
+                
+                # Get list of all available models
+                available_models = genai.list_models()
+                model_names = [model.name for model in available_models]
+                
+                logger.info(f"Found {len(model_names)} available models")
+                
+                # Display available models for debugging
+                if st.secrets.get("DEBUG", False):
+                    st.write("**Available Models:**")
+                    for name in model_names[:10]:  # Show first 10
+                        st.write(f"- {name}")
+                
+                # Prioritize vision-capable models
+                vision_model_patterns = [
+                    "gemini-1.5-pro",  # Latest 1.5 pro
+                    "gemini-1.0-pro-vision",  # Vision-specific
+                    "gemini-pro-vision",  # Legacy vision
+                    "gemini-1.5-flash",  # Flash variant
+                    "gemini-1.0-pro",  # Some pro models
+                    "gemini-pro",  # Fallback
+                ]
+                
+                for pattern in vision_model_patterns:
+                    # Find matching model
+                    matching_models = [name for name in model_names if pattern in name.lower()]
+                    
+                    if matching_models:
+                        # Try each matching model
+                        for full_model_name in matching_models:
+                            try:
+                                logger.info(f"Trying model: {full_model_name}")
+                                self.model = genai.GenerativeModel(full_model_name)
+                                self.model_name = full_model_name
+                                
+                                # Quick test with text only
+                                test_prompt = "Say 'Hello' if you're working"
+                                test_response = self.model.generate_content(test_prompt)
+                                
+                                if test_response and hasattr(test_response, 'text'):
+                                    logger.info(f"✅ Model {full_model_name} initialized successfully")
+                                    break
+                                else:
+                                    self.model = None
+                                    self.model_name = None
+                            except Exception as e:
+                                logger.warning(f"Model {full_model_name} failed: {str(e)[:100]}")
+                                self.model = None
+                                self.model_name = None
+                                continue
+                    
+                    if self.model:
+                        break
+                
+                if not self.model:
+                    logger.error("Could not find a working Gemini model")
+                    # Try the first available model as last resort
+                    if model_names:
+                        try:
+                            self.model = genai.GenerativeModel(model_names[0])
+                            self.model_name = model_names[0]
+                            logger.warning(f"Using fallback model: {model_names[0]}")
+                        except:
+                            pass
+                
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini Vision: {e}")
     
     def analyze_image(self, image_file):
         """Analyze image using Gemini Vision API"""
         if not self.model:
-            return {"error": "Gemini Vision API not initialized"}
+            return {"error": "Gemini Vision API not initialized - no working model found"}
         
         try:
             import google.generativeai as genai
@@ -515,20 +579,101 @@ class VisionRecognition:
             
             # Make API call with rate limiting
             rate_limiter.wait_if_needed()
-            response = self.model.generate_content([prompt, image])
             
-            # Track API usage
-            api_manager.track_usage('GOOGLE_API_KEY', True)
-            
-            # Parse the response into structured format
-            return self._parse_gemini_response(response.text, content)
+            # Check if model supports images
+            try:
+                response = self.model.generate_content([prompt, image])
+                api_manager.track_usage('GOOGLE_API_KEY', True)
+                
+                if not response or not hasattr(response, 'text'):
+                    return {"error": "No response from Gemini API"}
+                
+                return self._parse_gemini_response(response.text)
+                
+            except Exception as e:
+                # Model might not support vision, fallback to text-only
+                if "image" in str(e).lower() or "vision" in str(e).lower():
+                    logger.warning(f"Model {self.model_name} doesn't support images. Using text-only fallback.")
+                    return self._text_only_fallback(image, prompt)
+                else:
+                    raise e
             
         except Exception as e:
             logger.exception(f"Gemini Vision failed: {e}")
             api_manager.track_usage('GOOGLE_API_KEY', False)
             return {"error": str(e)}
     
-    def _parse_gemini_response(self, response_text, image_bytes=None):
+    def _text_only_fallback(self, image, prompt):
+        """Fallback when model doesn't support images"""
+        try:
+            # Try to extract basic info from image metadata
+            from PIL.ExifTags import TAGS
+            
+            info = {
+                'format': image.format,
+                'size': image.size,
+                'mode': image.mode,
+            }
+            
+            # Try to get EXIF data
+            try:
+                exif_data = image._getexif()
+                if exif_data:
+                    for tag_id, value in exif_data.items():
+                        tag = TAGS.get(tag_id, tag_id)
+                        info[tag] = str(value)[:100]
+            except:
+                pass
+            
+            # Create a basic description based on image properties
+            description = f"""
+            ## Image Analysis (Basic)
+            
+            **Image Properties:**
+            - Format: {info.get('format', 'Unknown')}
+            - Size: {info.get('size', 'Unknown')} pixels
+            - Color Mode: {info.get('mode', 'Unknown')}
+            
+            **Travel Analysis:**
+            Since I can't analyze the image content directly, here's general travel advice:
+            
+            1. **For Clear Outdoor Images:**
+               - Likely shows a travel destination
+               - Could be a landmark, natural wonder, or cityscape
+               - Consider popular destinations that match the image's color palette
+            
+            2. **Recommendations:**
+               - Upload to Google Images reverse search
+               - Ask travel communities for identification
+               - Check travel photography websites
+            
+            3. **General Travel Tips:**
+               - Research destinations before visiting
+               - Check visa requirements
+               - Learn basic local phrases
+               - Respect local customs and environment
+            
+            **Note:** For better analysis, ensure:
+            - Image is clear and well-lit
+            - Landmark is centered and unobstructed
+            - File is in JPG or PNG format
+            """
+            
+            return {
+                'description': description,
+                'landmarks': [],
+                'labels': [],
+                'travel_info': description,
+                'place_name': None,
+                'location_guess': None,
+                'source': 'text_fallback',
+                'warning': 'Vision capabilities not available in current model'
+            }
+            
+        except Exception as e:
+            return {"error": f"Text fallback failed: {str(e)}"}
+    
+    def _parse_gemini_response(self, response_text):
         """Parse Gemini response into structured format"""
         import re
         
@@ -539,7 +684,8 @@ class VisionRecognition:
             'travel_info': response_text,
             'place_name': None,
             'location_guess': None,
-            'source': 'gemini_vision'
+            'source': 'gemini_vision',
+            'model_used': self.model_name
         }
         
         # Try to extract landmark name using regex patterns
@@ -592,7 +738,8 @@ class VisionRecognition:
             'location': vision_response.get('location_guess'),
             'description': vision_response.get('description', ''),
             'travel_relevance': self._calculate_travel_relevance(vision_response),
-            'source': 'gemini_vision'
+            'source': vision_response.get('source', 'gemini_vision'),
+            'model_used': vision_response.get('model_used', 'unknown')
         }
         
         return place_info
