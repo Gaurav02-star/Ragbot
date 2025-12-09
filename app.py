@@ -184,7 +184,7 @@ except Exception as e:
 # Constants / Persistence
 # -------------------------
 PERSIST_DIR = "./chroma_db"
-EMBEDDING_MODEL_NAME = "models/text-embedding-004"  # ✅ FIXED
+EMBEDDING_MODEL_NAME = "text-embedding-004"  # ✅ FIXED
 CHAT_MODEL_CANDIDATES = [
      "gemini-1.5-pro-latest",    # ✅ FIXED
     "gemini-1.0-pro-latest",    # ✅ FIXED
@@ -963,15 +963,39 @@ def simple_text_search(text: str, query: str, top_k: int = 3) -> List[str]:
 def create_embedding_model():
     """Create embedding model with quota error handling"""
     try:
-        embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME)
-        test_embedding = embedding_model.embed_query("test")
-        return embedding_model
+        # EXPLICITLY set the model name - try multiple variants
+        model_names = [
+            "models/text-embedding-004",  # Newest
+            "text-embedding-004",         # Without models/ prefix
+            "models/embedding-001",       # Older but might work
+        ]
+        
+        for model_name in model_names:
+            try:
+                logger.info(f"Trying embedding model: {model_name}")
+                embedding_model = GoogleGenerativeAIEmbeddings(
+                    model=model_name,
+                    google_api_key=api_manager.get_key('GOOGLE_API_KEY')
+                )
+                # Test the embedding
+                test_embedding = embedding_model.embed_query("test")
+                logger.info(f"✅ Successfully loaded embedding model: {model_name}")
+                return embedding_model
+            except Exception as e:
+                logger.warning(f"Embedding model {model_name} failed: {e}")
+                continue
+        
+        # If all fail
+        st.warning("⚠️ All embedding models failed. Using keyword-based search instead.")
+        return None
+        
     except Exception as e:
         if "quota" in str(e).lower() or "429" in str(e):
             st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
             return None
         else:
-            raise e
+            logger.error(f"Embedding model error: {e}")
+            return None
 
 def build_or_load_vectorstore_from_chunks(chunks: List[str]):
     """Create or load a persisted Chroma vectorstore with quota handling"""
