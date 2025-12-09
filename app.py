@@ -1288,6 +1288,33 @@ weather_tool_wrapped = Tool(
 # -------------------------
 # Streamlit Navigation
 # -------------------------
+# -------------------------
+# Debug Function
+# -------------------------
+def debug_model_loading():
+    """Debug function to see what's happening with model loading"""
+    st.write("### 🔍 Debug Model Loading")
+    
+    # Check what models you actually have
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_manager.get_key('GOOGLE_API_KEY'))
+        
+        models = genai.list_models()
+        st.write("**Available models:**")
+        for model in models:
+            name = model.name.replace("models/", "")
+            methods = model.supported_generation_methods
+            if 'generateContent' in methods:
+                st.write(f"- {name}")
+    
+    except Exception as e:
+        st.error(f"Error checking models: {e}")
+
+# -------------------------
+# Streamlit Navigation
+# -------------------------
+
 st.sidebar.title("🌍 Navigation")
 page = st.sidebar.radio("Go to", [
     "Travel Search", 
@@ -1854,6 +1881,7 @@ elif page == "Image Recognition":
 # PAGE: API Management
 # -------------------------
 elif page == "API Management":
+    
     st.header("🔐 API Key Management")
     
     st.info("""
@@ -1885,6 +1913,14 @@ elif page == "API Management":
                 st.warning("**GEMINI_VISION**: ⚠️ No vision models found in your plan")
         except:
             st.error("**GEMINI_VISION**: ❌ Failed to check vision capability")
+    
+    # ========== DEBUG BUTTON ADDED HERE ==========
+    st.markdown("---")
+    st.subheader("🛠️ Debug Tools")
+    
+    if st.button("Check Available Gemini Models", type="secondary"):
+        debug_model_loading()
+    # ========== END DEBUG SECTION ==========
     
     # Display API Usage Statistics
     st.subheader("API Usage Statistics")
