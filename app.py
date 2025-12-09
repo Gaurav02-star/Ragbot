@@ -198,11 +198,11 @@ CHUNK_OVERLAP = 100
 DB_PATH = "travel_assistant.db"
 # Add these to your existing CHAT_MODEL_CANDIDATES or create a separate list
 VISION_MODEL_CANDIDATES = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro-latest", 
-    "gemini-1.0-pro-vision-latest",
-    "gemini-pro-vision",
-    "gemini-pro",
+    "gemini-2.0-flash-exp",      # ✅ Supports vision
+    "gemini-2.0-flash",          # ✅ Supports vision
+                "gemini-flash-latest",       # ✅ Latest supports vision
+                "gemini-pro-latest",         # ✅ Pro supports vision
+                "gemini-2.5-flash",          # ✅ 2.5 supports vision
 ]
 # -------------------------
 # Rate Limiting and Caching
