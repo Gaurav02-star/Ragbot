@@ -18,7 +18,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.tools import DuckDuckGoSearchRun
 
 # LangChain agent + Tool helpers
-from langchain.tools import Tool
+from langchain_community.tools import Tool
 from langchain.agents import initialize_agent, AgentType
 
 # -------------------------
