@@ -12,7 +12,7 @@ import streamlit as st
 import pdfplumber
 
 # LangChain + Google Gemini embedding/chat libraries
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
 from langchain_community.tools import DuckDuckGoSearchRun
