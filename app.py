@@ -187,9 +187,11 @@ PERSIST_DIR = "./chroma_db"
 EMBEDDING_MODEL_NAME = "models/text-embedding-004"  # ✅ FIXED
 # CORRECTED - Each model should be a separate string in the list
 CHAT_MODEL_CANDIDATES = [
-    "gemini-1.5-flash-latest",    # ✅ Separate string
-    "gemini-1.5-pro-latest",      # ✅ Separate string
-    "gemini-1.0-pro-latest",      # ✅ Separate string
+    "gemini-2.0-flash-exp",        # ✅ Experimental but fast
+    "gemini-2.0-flash",            # ✅ Fast and reliable
+    "gemini-flash-latest",         # ✅ Latest flash version
+    "gemini-pro-latest",           # ✅ Latest pro version
+    "gemini-2.5-flash",            # ✅ New 2.5 version
 ]
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
@@ -475,12 +477,11 @@ class VisionRecognition:
             # CORRECTED: Prioritize vision-capable Gemini models
             # Using proper model names without "models/" prefix
                 vision_model_patterns = [
-                "gemini-1.5-flash-latest",      # Latest and capable
-                "gemini-1.5-pro-latest",        # Pro version
-                "gemini-1.0-pro-vision-latest", # Vision-specific
-                "gemini-1.0-pro-latest",        # General purpose
-                "gemini-pro-vision",             # Legacy vision
-                "gemini-pro",                    # Legacy
+                 "gemini-2.0-flash-exp",      # ✅ Supports vision
+                "gemini-2.0-flash",          # ✅ Supports vision
+                "gemini-flash-latest",       # ✅ Latest supports vision
+                "gemini-pro-latest",         # ✅ Pro supports vision
+                "gemini-2.5-flash",          # ✅ 2.5 supports vision                  # Legacy
                 ]
             
                 for pattern in vision_model_patterns:
@@ -984,11 +985,13 @@ def create_chat_llm(temperature: float = 0.3):
     last_error = None
     
     # CORRECTED: Use proper model names that actually exist
-    model_candidates = [
-        "gemini-1.5-flash-latest",    # ✅ Fast and reliable
-        "gemini-1.5-pro-latest",      # ✅ More capable
-        "gemini-1.0-pro-latest",      # ✅ Legacy but works
-    ]
+    model_candidates  = [
+    "gemini-2.0-flash-exp",        # ✅ Experimental but fast
+    "gemini-2.0-flash",            # ✅ Fast and reliable
+    "gemini-flash-latest",         # ✅ Latest flash version
+    "gemini-pro-latest",           # ✅ Latest pro version
+    "gemini-2.5-flash",            # ✅ New 2.5 version
+]
     
     logger.info(f"Trying models in order: {model_candidates}")
     
