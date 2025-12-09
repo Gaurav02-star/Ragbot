@@ -193,7 +193,14 @@ CHAT_MODEL_CANDIDATES = [
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 DB_PATH = "travel_assistant.db"
-
+# Add these to your existing CHAT_MODEL_CANDIDATES or create a separate list
+VISION_MODEL_CANDIDATES = [
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest", 
+    "gemini-1.0-pro-vision-latest",
+    "gemini-pro-vision",
+    "gemini-pro",
+]
 # -------------------------
 # Rate Limiting and Caching
 # -------------------------
@@ -446,50 +453,57 @@ class VisionRecognition:
         self.gemini_api_key = gemini_api_key
         self.model = None
         self.model_name = None
-        
+    
         if gemini_api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key)
-                
-                # Get list of all available models
+            
+            # Get list of all available models
                 available_models = genai.list_models()
                 model_names = [model.name for model in available_models]
-                
+            
                 logger.info(f"Found {len(model_names)} available models")
-                
-                # Display available models for debugging
+            
+            # Display available models for debugging
                 if st.secrets.get("DEBUG", False):
                     st.write("**Available Models:**")
                     for name in model_names[:10]:  # Show first 10
                         st.write(f"- {name}")
-                
-                # Prioritize vision-capable models
+            
+            # CORRECTED: Prioritize vision-capable Gemini models
+            # Using proper model names without "models/" prefix
                 vision_model_patterns = [
-                    "gemini-1.5-pro-latest",      # Most capable
-                    "gemini-1.0-pro-vision-latest", # Vision-specific
-                    "gemini-1.0-pro-latest",      # General purpose
-                    "gemini-pro",                 # Legacy
+                "gemini-1.5-flash-latest",      # Latest and capable
+                "gemini-1.5-pro-latest",        # Pro version
+                "gemini-1.0-pro-vision-latest", # Vision-specific
+                "gemini-1.0-pro-latest",        # General purpose
+                "gemini-pro-vision",             # Legacy vision
+                "gemini-pro",                    # Legacy
                 ]
-                
+            
                 for pattern in vision_model_patterns:
-                    # Find matching model
-                    matching_models = [name for name in model_names if pattern in name.lower()]
-                    
+                # Find matching model
+                    matching_models = [name for name in model_names if pattern in name]
+                
                     if matching_models:
-                        # Try each matching model
+                    # Try each matching model
                         for full_model_name in matching_models:
                             try:
-                                logger.info(f"Trying model: {full_model_name}")
-                                self.model = genai.GenerativeModel(full_model_name)
-                                self.model_name = full_model_name
-                                
-                                # Quick test with text only
+                                logger.info(f"Trying vision model: {full_model_name}")
+                            
+                            # IMPORTANT: Use just the model name without "models/" prefix
+                                model_name_clean = full_model_name.replace("models/", "")
+                                self.model = genai.GenerativeModel(model_name_clean)
+                                self.model_name = model_name_clean
+                            
+                            # Quick test with text only to verify it works
                                 test_prompt = "Say 'Hello' if you're working"
                                 test_response = self.model.generate_content(test_prompt)
-                                
+                            
                                 if test_response and hasattr(test_response, 'text'):
-                                    logger.info(f"✅ Model {full_model_name} initialized successfully")
+                                    logger.info(f"✅ Vision model {model_name_clean} initialized successfully")
+                                    st.sidebar.success(f"Vision: {model_name_clean}")
                                     break
                                 else:
                                     self.model = None
@@ -499,21 +513,25 @@ class VisionRecognition:
                                 self.model = None
                                 self.model_name = None
                                 continue
-                    
+                
                     if self.model:
                         break
-                
+            
                 if not self.model:
-                    logger.error("Could not find a working Gemini model")
-                    # Try the first available model as last resort
-                    if model_names:
+                    logger.warning("⚠️ Could not find a working vision-capable Gemini model")
+                # Fallback: Try to use any generative model
+                    generative_models = [name for name in model_names if 'generateContent' in name.supported_generation_methods]
+                
+                    if generative_models:
                         try:
-                            self.model = genai.GenerativeModel(model_names[0])
-                            self.model_name = model_names[0]
-                            logger.warning(f"Using fallback model: {model_names[0]}")
+                            model_name_clean = generative_models[0].replace("models/", "")
+                            self.model = genai.GenerativeModel(model_name_clean)
+                            self.model_name = model_name_clean
+                            logger.warning(f"⚠️ Using fallback model (may not support vision): {model_name_clean}")
+                            st.sidebar.warning(f"Vision: Fallback {model_name_clean}")
                         except:
                             pass
-                
+        
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini Vision: {e}")
     
