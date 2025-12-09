@@ -16,12 +16,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
 from langchain_community.tools import DuckDuckGoSearchRun
-
-# LangChain agent + Tool helpers
 from langchain_community.tools import Tool
-
-
-
 
 # -------------------------
 # Logging
@@ -43,7 +38,6 @@ class APIKeyManager:
     def __init__(self):
         self.keys = {}
         self.usage_stats = {}
-        self.vision_credentials_path = None
         self.load_keys()
     
     def load_keys(self):
@@ -58,7 +52,6 @@ class APIKeyManager:
                 'OPENWEATHER_API_KEY': st.secrets.get("OPENWEATHER_API_KEY", ""),
                 'AMADEUS_CLIENT_ID': st.secrets.get("AMADEUS_CLIENT_ID", ""),
                 'AMADEUS_CLIENT_SECRET': st.secrets.get("AMADEUS_CLIENT_SECRET", ""),
-                'GOOGLE_VISION_JSON': st.secrets.get("GOOGLE_VISION_JSON", "")
             }
             
             # Initialize usage stats
@@ -73,53 +66,27 @@ class APIKeyManager:
             # Set environment variables
             os.environ["GOOGLE_API_KEY"] = self.keys['GOOGLE_API_KEY']
             
-            # If Vision JSON exists, save to file and set up credentials
-            if self.keys['GOOGLE_VISION_JSON']:
-                self.setup_vision_credentials()
-            
         except Exception as e:
             logger.error(f"Failed to load API keys: {e}")
             raise
-    
-    def setup_vision_credentials(self):
-        """Save JSON credentials to a temporary file for Vision API"""
-        try:
-            import tempfile
-            
-            # Parse JSON to ensure it's valid
-            json_data = json.loads(self.keys['GOOGLE_VISION_JSON'])
-            
-            # Save to temporary file
-            temp_dir = tempfile.gettempdir()
-            creds_file = os.path.join(temp_dir, "vision_credentials.json")
-            
-            with open(creds_file, 'w') as f:
-                json.dump(json_data, f)
-            
-            # Store the path for later use
-            self.vision_credentials_path = creds_file
-            
-            # Set environment variable for Google Cloud
-            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = creds_file
-            
-            logger.info(f"Vision credentials saved to: {creds_file}")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup Vision credentials: {e}")
-            st.error(f"Failed to setup Vision credentials: {e}")
     
     def validate_keys(self):
         """Validate all API keys and return status"""
         validation_results = {}
         
-        # Validate Google Gemini API Key
+        # Validate Google Gemini API Key (for both chat and vision)
         try:
             import google.generativeai as genai
             genai.configure(api_key=self.keys['GOOGLE_API_KEY'])
             models = genai.list_models()
+            model_names = [model.name for model in models]
+            
+            # Check if Gemini Vision is available
+            vision_available = any('gemini' in name.lower() and 'vision' in name.lower() for name in model_names)
+            
             validation_results['GOOGLE_API_KEY'] = {
                 'valid': True,
-                'message': f"✅ Valid (Available models: {len(list(models))})"
+                'message': f"✅ Valid ({len(model_names)} models, Vision: {'Yes' if vision_available else 'No'})"
             }
         except Exception as e:
             validation_results['GOOGLE_API_KEY'] = {
@@ -187,55 +154,6 @@ class APIKeyManager:
                 'message': "⚠️ Not configured"
             }
         
-        # Validate Google Vision API (Service Account)
-        if self.keys['GOOGLE_VISION_JSON']:
-            try:
-                # Try to parse JSON
-                json.loads(self.keys['GOOGLE_VISION_JSON'])
-                
-                # Try to initialize Vision client
-                try:
-                    from google.cloud import vision_v1
-                    from google.oauth2 import service_account
-                    
-                    credentials_info = json.loads(self.keys['GOOGLE_VISION_JSON'])
-                    credentials = service_account.Credentials.from_service_account_info(credentials_info)
-                    
-                    # Test initialization (won't make actual API call)
-                    client = vision_v1.ImageAnnotatorClient(credentials=credentials)
-                    
-                    validation_results['GOOGLE_VISION_API'] = {
-                        'valid': True,
-                        'message': f"✅ Valid (Service Account: {credentials_info.get('client_email', 'Unknown')})"
-                    }
-                    
-                except ImportError:
-                    validation_results['GOOGLE_VISION_API'] = {
-                        'valid': False,
-                        'message': "❌ google-cloud-vision library not installed"
-                    }
-                except Exception as e:
-                    validation_results['GOOGLE_VISION_API'] = {
-                        'valid': False,
-                        'message': f"❌ Service account error: {str(e)[:100]}"
-                    }
-                    
-            except json.JSONDecodeError:
-                validation_results['GOOGLE_VISION_API'] = {
-                    'valid': False,
-                    'message': "❌ Invalid JSON format"
-                }
-            except Exception as e:
-                validation_results['GOOGLE_VISION_API'] = {
-                    'valid': False,
-                    'message': f"❌ Validation error: {str(e)[:100]}"
-                }
-        else:
-            validation_results['GOOGLE_VISION_API'] = {
-                'valid': False,
-                'message': "⚠️ Not configured"
-            }
-        
         return validation_results
     
     def track_usage(self, key_name: str, success: bool = True):
@@ -253,10 +171,6 @@ class APIKeyManager:
     def get_key(self, key_name: str) -> Optional[str]:
         """Safely get an API key"""
         return self.keys.get(key_name)
-    
-    def get_vision_credentials_json(self):
-        """Get Vision API credentials JSON"""
-        return self.keys.get('GOOGLE_VISION_JSON')
 
 # Initialize API Key Manager
 try:
@@ -272,9 +186,9 @@ except Exception as e:
 PERSIST_DIR = "./chroma_db"
 EMBEDDING_MODEL_NAME = "models/embedding-001"
 CHAT_MODEL_CANDIDATES = [
-    "models/gemini-2.5-flash",
-    "models/gemini-2.5-flash-preview-05-20",
-    "models/gemini-2.5-pro-preview-03-25",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "gemini-pro",
 ]
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
@@ -286,7 +200,7 @@ DB_PATH = "travel_assistant.db"
 class RateLimiter:
     def __init__(self):
         self.last_call_time = 0
-        self.min_interval = 7  # seconds between calls (to stay under 10/minute)
+        self.min_interval = 2  # seconds between calls
     
     def wait_if_needed(self):
         current_time = time.time()
@@ -525,43 +439,36 @@ def secure_requests_post(url, data=None, json=None, headers=None, api_name="Unkn
         raise e
 
 # -------------------------
-# Vision Recognition Class
+# Vision Recognition Class - USING GEMINI VISION
 # -------------------------
 class VisionRecognition:
-    def __init__(self, credentials_json: str = None):
-        self.credentials_json = credentials_json
-        self.client = None
+    def __init__(self, gemini_api_key: str = None):
+        self.gemini_api_key = gemini_api_key
+        self.model = None
         
-        if credentials_json:
+        if gemini_api_key:
             try:
-                from google.cloud import vision_v1
-                from google.oauth2 import service_account
-                
-                # Parse credentials from JSON string
-                credentials_info = json.loads(credentials_json)
-                credentials = service_account.Credentials.from_service_account_info(credentials_info)
-                
-                # Initialize Vision client
-                self.client = vision_v1.ImageAnnotatorClient(credentials=credentials)
-                logger.info("✅ Vision API client initialized with service account")
-                
-            except ImportError:
-                logger.warning("google-cloud-vision library not installed. Install with: pip install google-cloud-vision")
+                import google.generativeai as genai
+                genai.configure(api_key=gemini_api_key)
+                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                logger.info("✅ Gemini Vision API initialized")
             except Exception as e:
-                logger.error(f"Failed to initialize Vision client: {e}")
+                logger.error(f"Failed to initialize Gemini Vision: {e}")
     
-    def analyze_image(self, image_file, features=None):
-        """Analyze image using Google Cloud Vision API"""
-        if not self.client:
-            return {"error": "Vision API client not initialized"}
+    def analyze_image(self, image_file):
+        """Analyze image using Gemini Vision API"""
+        if not self.model:
+            return {"error": "Gemini Vision API not initialized"}
         
         try:
-            from google.cloud import vision_v1
+            import google.generativeai as genai
+            from PIL import Image
             import io
             
             # Read image content
             if hasattr(image_file, 'read'):
                 content = image_file.read()
+                image_file.seek(0)  # Reset file pointer
             elif isinstance(image_file, str):
                 with open(image_file, 'rb') as f:
                     content = f.read()
@@ -569,100 +476,107 @@ class VisionRecognition:
                 content = image_file.getvalue()
             
             # Create image object
-            image = vision_v1.Image(content=content)
+            image = Image.open(io.BytesIO(content))
             
-            # Define features to detect
-            if features is None:
-                features = [
-                    vision_v1.Feature(type_=vision_v1.Feature.Type.LANDMARK_DETECTION),
-                    vision_v1.Feature(type_=vision_v1.Feature.Type.LABEL_DETECTION),
-                    vision_v1.Feature(type_=vision_v1.Feature.Type.WEB_DETECTION),
-                ]
+            # Create detailed prompt for travel analysis
+            prompt = """
+            You are a travel expert analyzing an image. Please provide comprehensive information about this image.
             
-            # Create request
-            request = vision_v1.AnnotateImageRequest(image=image, features=features)
+            Analyze this travel-related image and provide:
+            
+            1. **LANDMARK IDENTIFICATION** (if any):
+               - Name of landmark/place
+               - Type (beach, mountain, temple, building, etc.)
+               - Confidence level (High/Medium/Low)
+            
+            2. **IMAGE DESCRIPTION**:
+               - What's visible in the image
+               - Key features
+               - Setting/location clues
+            
+            3. **TRAVEL ANALYSIS**:
+               - Is this a travel destination?
+               - What type of destination?
+               - Activities possible here
+            
+            4. **LOCATION GUESS** (if possible):
+               - Country/region
+               - City/area
+               - Why you think so
+            
+            5. **TRAVEL RECOMMENDATIONS**:
+               - Best time to visit
+               - Things to do
+               - Travel tips
+            
+            Format your response with clear sections and bullet points.
+            Make it engaging and practical for travelers planning a trip.
+            """
             
             # Make API call with rate limiting
             rate_limiter.wait_if_needed()
-            response = self.client.annotate_image(request=request)
+            response = self.model.generate_content([prompt, image])
             
-            # Log API usage
-            api_manager.track_usage('GOOGLE_VISION_API', True)
+            # Track API usage
+            api_manager.track_usage('GOOGLE_API_KEY', True)
             
-            # Convert response to dictionary
-            return self._convert_response_to_dict(response)
+            # Parse the response into structured format
+            return self._parse_gemini_response(response.text, content)
             
         except Exception as e:
-            logger.exception(f"Vision API failed: {e}")
-            api_manager.track_usage('GOOGLE_VISION_API', False)
+            logger.exception(f"Gemini Vision failed: {e}")
+            api_manager.track_usage('GOOGLE_API_KEY', False)
             return {"error": str(e)}
     
-    def _convert_response_to_dict(self, response):
-        """Convert Vision API response to dictionary format"""
+    def _parse_gemini_response(self, response_text, image_bytes=None):
+        """Parse Gemini response into structured format"""
+        import re
+        
         result = {
+            'description': response_text,
             'landmarks': [],
             'labels': [],
-            'objects': [],
-            'web_detection': {},
-            'safe_search': {}
+            'travel_info': response_text,
+            'place_name': None,
+            'location_guess': None,
+            'source': 'gemini_vision'
         }
         
-        # Extract landmarks
-        for landmark in response.landmark_annotations:
-            landmark_info = {
-                'description': landmark.description,
-                'score': landmark.score,
-                'locations': []
-            }
-            
-            # Extract locations
-            for location in landmark.locations:
-                lat_lng = location.lat_lng
-                if lat_lng:
-                    landmark_info['locations'].append({
-                        'latitude': lat_lng.latitude,
-                        'longitude': lat_lng.longitude
-                    })
-            
-            result['landmarks'].append(landmark_info)
+        # Try to extract landmark name using regex patterns
+        landmark_patterns = [
+            r"(?:This is|I see|That's|It looks like) (?:the )?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"(?:appears to be|seems to be|looks like) ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"(?:recognize.*as|identify.*as) ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)"
+        ]
         
-        # Extract labels
-        for label in response.label_annotations:
-            result['labels'].append({
-                'description': label.description,
-                'score': label.score,
-                'mid': label.mid if hasattr(label, 'mid') else None
-            })
+        for pattern in landmark_patterns:
+            match = re.search(pattern, response_text, re.IGNORECASE)
+            if match:
+                result['place_name'] = match.group(1)
+                result['landmarks'].append({
+                    'description': match.group(1),
+                    'score': 0.7,
+                    'source': 'text_analysis'
+                })
+                break
         
-        # Extract web detection results
-        if response.web_detection:
-            web = response.web_detection
-            
-            # Best guess labels
-            if web.best_guess_labels:
-                result['web_detection']['best_guess'] = [
-                    {'label': label.label} for label in web.best_guess_labels
-                ]
-            
-            # Web entities
-            if web.web_entities:
-                result['web_detection']['web_entities'] = [
-                    {'description': entity.description, 'score': entity.score}
-                    for entity in web.web_entities
-                ]
-            
-            # Visually similar images
-            if web.visually_similar_images:
-                result['web_detection']['visually_similar_images'] = [
-                    {'url': img.url} for img in web.visually_similar_images[:5]
-                ]
-            
-            # Pages with matching images
-            if web.pages_with_matching_images:
-                result['web_detection']['pages_with_matching_images'] = [
-                    {'url': page.url, 'page_title': page.page_title}
-                    for page in web.pages_with_matching_images[:3]
-                ]
+        # Try to extract location mentions
+        location_pattern = r"(?:in|from|of|near) ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)"
+        location_matches = re.findall(location_pattern, response_text)
+        if location_matches:
+            result['location_guess'] = location_matches[0]
+        
+        # Extract labels/tags from the description
+        travel_keywords = ['beach', 'mountain', 'temple', 'church', 'mosque', 'castle', 
+                          'palace', 'monument', 'landmark', 'historical', 'tourist',
+                          'city', 'town', 'village', 'destination', 'travel', 'vacation']
+        
+        for keyword in travel_keywords:
+            if keyword.lower() in response_text.lower():
+                result['labels'].append({
+                    'description': keyword,
+                    'score': 0.8
+                })
         
         return result
     
@@ -674,155 +588,78 @@ class VisionRecognition:
         place_info = {
             'landmarks': vision_response.get('landmarks', []),
             'labels': vision_response.get('labels', []),
-            'web_detection': vision_response.get('web_detection', {}),
-            'primary_landmark': None,
-            'place_name': None,
-            'location': None,
-            'tags': [],
-            'travel_relevance': 0
+            'place_name': vision_response.get('place_name'),
+            'location': vision_response.get('location_guess'),
+            'description': vision_response.get('description', ''),
+            'travel_relevance': self._calculate_travel_relevance(vision_response),
+            'source': 'gemini_vision'
         }
-        
-        # Find primary landmark (highest score)
-        if place_info['landmarks']:
-            place_info['landmarks'].sort(key=lambda x: x['score'], reverse=True)
-            place_info['primary_landmark'] = place_info['landmarks'][0]
-            place_info['place_name'] = place_info['primary_landmark']['description']
-            
-            # Set location if available
-            if place_info['primary_landmark']['locations']:
-                loc = place_info['primary_landmark']['locations'][0]
-                place_info['location'] = {
-                    'latitude': loc['latitude'],
-                    'longitude': loc['longitude']
-                }
-        
-        # Extract tags from labels
-        for label in place_info['labels'][:10]:
-            if label['score'] > 0.7:
-                place_info['tags'].append(label['description'])
-        
-        # Calculate travel relevance score
-        travel_keywords = ['landmark', 'monument', 'temple', 'church', 'mosque', 'castle', 'palace',
-                          'beach', 'mountain', 'park', 'garden', 'museum', 'historical', 'tourist',
-                          'city', 'town', 'village', 'destination', 'travel', 'vacation']
-        
-        relevance_score = 0
-        all_text = ' '.join([l['description'].lower() for l in place_info['labels']])
-        
-        for keyword in travel_keywords:
-            if keyword in all_text:
-                relevance_score += 1
-        
-        place_info['travel_relevance'] = min(relevance_score / len(travel_keywords) * 100, 100)
-        
-        # Try to get place name from web detection if no landmark found
-        if not place_info['place_name'] and 'web_detection' in place_info:
-            web = place_info['web_detection']
-            if 'best_guess' in web and web['best_guess']:
-                place_info['place_name'] = web['best_guess'][0]['label']
         
         return place_info
     
+    def _calculate_travel_relevance(self, vision_response):
+        """Calculate how relevant this image is for travel"""
+        text = vision_response.get('description', '').lower()
+        
+        travel_keywords = ['travel', 'tourist', 'destination', 'vacation', 'holiday',
+                          'visit', 'sightseeing', 'landmark', 'monument', 'attraction',
+                          'beach', 'mountain', 'temple', 'church', 'mosque', 'castle',
+                          'historical', 'cultural', 'adventure', 'explore']
+        
+        score = 0
+        for keyword in travel_keywords:
+            if keyword in text:
+                score += 1
+        
+        return min(score / len(travel_keywords) * 100, 100)
+    
     def generate_travel_info(self, place_info):
-        """Generate travel information using Gemini"""
+        """Generate travel information using the analysis"""
         if 'error' in place_info:
             return f"Error: {place_info['error']}"
         
-        # Prepare context for Gemini
-        context_parts = []
+        # If we already have a good description from Gemini, use it
+        if place_info.get('description'):
+            return place_info['description']
         
-        if place_info['primary_landmark']:
-            context_parts.append(f"Landmark: {place_info['primary_landmark']['description']} (confidence: {place_info['primary_landmark']['score']:.0%})")
-        
-        if place_info['place_name']:
-            context_parts.append(f"Place: {place_info['place_name']}")
-        
-        if place_info['location']:
-            context_parts.append(f"Location: Latitude {place_info['location']['latitude']}, Longitude {place_info['location']['longitude']}")
-        
-        if place_info['tags']:
-            context_parts.append(f"Tags: {', '.join(place_info['tags'][:10])}")
-        
-        if not context_parts:
-            return "I couldn't identify a specific place in this image. Try uploading a clearer image of a famous landmark or tourist destination."
-        
-        context = "\n".join(context_parts)
-        
-        # Create prompt for Gemini
-        prompt = f"""
-        You are a travel expert. Based on the following image analysis, provide comprehensive travel information:
-        
-        {context}
-        
-        Please provide:
-        1. **What is this place?** - Identify and describe it
-        2. **Location** - Country, region, city
-        3. **Historical/Cultural Significance** - Why is it important?
-        4. **Best Time to Visit** - Recommended seasons/months
-        5. **Top 5 Things to Do/See** - Must-visit spots and activities
-        6. **Travel Tips** - Practical advice for visitors
-        7. **Local Cuisine** - What food to try
-        8. **How to Get There** - Transportation options
-        
-        If you recognize the place, be specific. If not, make educated guesses based on the tags and provide general travel advice for similar destinations.
-        
-        Format with clear headings and bullet points. Make it engaging and practical for travelers.
-        """
-        
-        try:
-            llm = create_chat_llm(temperature=0.7)
-            response = safe_llm_invoke(llm, prompt)
-            return response
-        except Exception as e:
-            logger.error(f"Failed to generate travel info: {e}")
-            return self.generate_basic_info(place_info)
-    
-    def generate_basic_info(self, place_info):
-        """Generate basic information without LLM"""
-        if not place_info['place_name']:
-            return "I couldn't identify a specific place. Try uploading a clearer image of a famous landmark."
-        
+        # Otherwise create basic info
         basic_info = f"""
-# {place_info['place_name']}
+# Travel Analysis
 
-## Quick Facts
-- **Identified as**: {place_info['place_name']}
-- **Travel Relevance**: {place_info['travel_relevance']:.0f}% likely to be a travel destination
+## What I See:
+{place_info.get('description', 'Unable to analyze image in detail.')}
 
-## What to Do Next:
-1. **Research online**: Search for "{place_info['place_name']} travel guide"
-2. **Check weather**: Look up local climate and best visiting seasons
-3. **Find accommodations**: Search hotels near {place_info['place_name']}
-4. **Plan activities**: Look for tours and local experiences
-5. **Check requirements**: Verify visa and entry requirements if traveling internationally
+## Travel Relevance: {place_info.get('travel_relevance', 0):.0f}%
 
-## Image Analysis Details:
-**Detected Features:** {', '.join(place_info['tags'][:5])}
+## Suggested Actions:
+1. **Research online**: Search for similar destinations
+2. **Check travel guides**: Look up recommended places
+3. **Plan activities**: Based on the type of location
+4. **Consult travel forums**: Get real traveler experiences
+
+## Tips:
+- Upload clearer images of landmarks for better analysis
+- Include famous monuments or natural wonders
+- Try different angles and lighting
 """
-        
-        if place_info['location']:
-            lat = place_info['location']['latitude']
-            lon = place_info['location']['longitude']
-            basic_info += f"\n**Approximate Location:** Latitude: {lat:.4f}, Longitude: {lon:.4f}"
-            basic_info += f"\n**Google Maps:** https://www.google.com/maps?q={lat},{lon}"
         
         return basic_info
     
     def get_google_maps_url(self, place_info):
         """Generate Google Maps URL for the place"""
-        if place_info.get('location'):
-            lat = place_info['location']['latitude']
-            lon = place_info['location']['longitude']
-            return f"https://www.google.com/maps?q={lat},{lon}"
-        
         if place_info.get('place_name'):
-            return f"https://www.google.com/maps/search/{place_info['place_name'].replace(' ', '+')}"
+            query = place_info['place_name'].replace(' ', '+')
+            return f"https://www.google.com/maps/search/{query}"
+        
+        if place_info.get('location'):
+            query = place_info['location'].replace(' ', '+')
+            return f"https://www.google.com/maps/search/{query}"
         
         return None
 
-# Initialize Vision client
-vision_json = api_manager.get_key('GOOGLE_VISION_JSON')
-vision_client = VisionRecognition(vision_json) if vision_json else None
+# Initialize Vision client with Gemini Vision
+gemini_key = api_manager.get_key('GOOGLE_API_KEY')
+vision_client = VisionRecognition(gemini_key) if gemini_key else None
 
 # -------------------------
 # Amadeus Flight API Integration - ONE WAY ONLY
@@ -866,17 +703,7 @@ class AmadeusClient:
     def search_flights(self, origin: str, destination: str, departure_date: str, adults: int = 1):
         """
         Searches for one-way flights using the Amadeus Flight Offers API.
-
-        Parameters:
-            origin (str): 3-letter IATA origin airport code.
-            destination (str): 3-letter IATA destination airport code.
-            departure_date (str): Date in YYYY-MM-DD format.
-            adults (int): Number of adult passengers.
-
-        Returns:
-            List[Dict] or Dict: Parsed flight data or an error message.
         """
-
         try:
             token = self.get_access_token()
             if not token:
@@ -1677,85 +1504,26 @@ elif page == "Image Recognition":
     st.info("""
     **Upload an image of a place** to get information about it!
     Features:
-    • Identify landmarks and places
+    • Identify landmarks and places using Gemini Vision
     • Get travel information
     • Discover things to do
     • Find location on map
     """)
     
-    # Check if Vision API is configured
-    if not vision_json or not KEY_VALIDATION.get('GOOGLE_VISION_API', {}).get('valid'):
+    # Check if Gemini Vision is configured
+    if not vision_client or not gemini_key:
         st.warning("""
-        ⚠️ Google Vision API not configured.
+        ⚠️ Gemini Vision API not available.
         
         To enable image recognition:
-        1. Enable the Vision API in Google Cloud Console
-        2. Create a service account and download JSON key
-        3. Add `GOOGLE_VISION_JSON` to your Streamlit secrets with the JSON content
-        4. Install required library: `pip install google-cloud-vision`
+        1. Make sure GOOGLE_API_KEY is configured in Streamlit secrets
+        2. The key should have access to Gemini Vision API
+        
+        Gemini Vision is used for image analysis.
         """)
-        
-        # Show example of how to format the secret
-        with st.expander("📝 How to format the secret"):
-            st.code("""
-            # In .streamlit/secrets.toml:
-            GOOGLE_VISION_JSON = '''
-            {
-              "type": "service_account",
-              "project_id": "...",
-              "private_key_id": "...",
-              "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
-              "client_email": "...",
-              "client_id": "...",
-              "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-              "token_uri": "https://oauth2.googleapis.com/token",
-              "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-              "client_x509_cert_url": "...",
-              "universe_domain": "googleapis.com"
-            }
-            '''
-            """, language="toml")
-        
-        # Fallback: Use Gemini for image description
-        st.markdown("---")
-        st.subheader("Try with Gemini (Basic)")
-        
-        uploaded_image = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png", "webp"], key="gemini_fallback")
-        
-        if uploaded_image and st.button("Describe with Gemini"):
-            try:
-                st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
-                
-                with st.spinner("Analyzing image..."):
-                    import google.generativeai as genai
-                    genai.configure(api_key=api_manager.get_key('GOOGLE_API_KEY'))
-                    
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    
-                    prompt = """
-                    Analyze this travel-related image and provide:
-                    1. What place or landmark is shown (if recognizable)
-                    2. Type of location (beach, mountain, city, historical site, etc.)
-                    3. Travel tips for visiting such places
-                    4. Activities you can do there
-                    """
-                    
-                    response = model.generate_content([
-                        prompt,
-                        {"mime_type": uploaded_image.type, "data": uploaded_image.getvalue()}
-                    ])
-                    
-                    st.markdown("### 🧭 Image Analysis")
-                    st.write(response.text)
-                    
-                    # Save to database
-                    save_search(f"Image analysis (Gemini): {uploaded_image.name}", "image_recognition", response.text[:1000])
-                    
-            except Exception as e:
-                st.error(f"Image analysis failed: {e}")
-    
     else:
-        # Vision API is configured
+        st.success("✅ Gemini Vision API is ready!")
+        
         # Image upload section
         col1, col2 = st.columns([2, 1])
         
@@ -1771,7 +1539,7 @@ elif page == "Image Recognition":
             analysis_mode = st.radio(
                 "Analysis Mode",
                 ["Quick", "Detailed"],
-                help="Quick: Basic analysis | Detailed: Full analysis with web search"
+                help="Quick: Basic analysis | Detailed: Full analysis"
             )
         
         if uploaded_image:
@@ -1780,14 +1548,14 @@ elif page == "Image Recognition":
             
             # Add analysis button
             if st.button("🔍 Analyze Image", type="primary"):
-                with st.spinner("Analyzing image..."):
+                with st.spinner("Analyzing image with Gemini Vision..."):
                     try:
                         # Analyze image
-                        st.info("🔄 Calling Google Vision API...")
+                        st.info("🔄 Calling Gemini Vision API...")
                         vision_response = vision_client.analyze_image(uploaded_image)
                         
                         if 'error' in vision_response:
-                            st.error(f"❌ Vision API Error: {vision_response['error']}")
+                            st.error(f"❌ Gemini Vision Error: {vision_response['error']}")
                         else:
                             # Extract place information
                             place_info = vision_client.extract_place_info(vision_response)
@@ -1797,105 +1565,46 @@ elif page == "Image Recognition":
                             st.subheader("📍 Recognition Results")
                             
                             # Show primary landmark
-                            if place_info['primary_landmark']:
-                                landmark = place_info['primary_landmark']
-                                
-                                st.success(f"**🎯 Identified Landmark:** {landmark['description']}")
-                                st.write(f"**Confidence:** {landmark['score']:.1%}")
-                                
-                                # Generate travel information
-                                st.info("📝 Generating travel information...")
-                                travel_info = vision_client.generate_travel_info(place_info)
-                                
-                                st.markdown("### 🧭 Travel Information")
-                                st.markdown(travel_info)
-                                
-                                # Action buttons
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    maps_url = vision_client.get_google_maps_url(place_info)
-                                    if maps_url:
-                                        st.markdown(f"[🗺️ Open in Google Maps]({maps_url})")
-                                
-                                with col2:
-                                    search_query = place_info['place_name'].replace(' ', '+')
-                                    st.markdown(f"[🔍 Search Online](https://www.google.com/search?q={search_query}+travel)")
-                                
-                                with col3:
-                                    if st.button("🗓️ Create Itinerary", key="create_itinerary_btn"):
-                                        # Store destination for itinerary generation
-                                        st.session_state['itinerary_destination'] = place_info['place_name']
-                                        st.success(f"Destination '{place_info['place_name']}' saved for itinerary generation!")
-                                
-                                # Save to database
-                                save_image_search(
-                                    image_name=uploaded_image.name,
-                                    landmark_name=landmark['description'],
-                                    confidence=landmark['score'],
-                                    travel_info=travel_info[:2000]
-                                )
+                            if place_info.get('place_name'):
+                                st.success(f"**🎯 Identified Place:** {place_info['place_name']}")
                             
-                            else:
-                                # No landmark found, show labels and basic info
-                                if place_info['labels']:
-                                    st.info("🤔 No specific landmark identified, but here's what I found:")
-                                    
-                                    # Show top labels
-                                    st.subheader("🏷️ Detected Features")
-                                    cols = st.columns(4)
-                                    for i, label in enumerate(place_info['labels'][:8]):
-                                        with cols[i % 4]:
-                                            st.metric(
-                                                label=label['description'][:15],
-                                                value=f"{label['score']:.0%}"
-                                            )
-                                    
-                                    # Generate basic info
-                                    basic_info = vision_client.generate_basic_info(place_info)
-                                    st.markdown("### 📝 What This Could Be")
-                                    st.markdown(basic_info)
-                                    
-                                    # Save to database
-                                    save_image_search(
-                                        image_name=uploaded_image.name,
-                                        landmark_name=place_info['place_name'] or "Unknown",
-                                        confidence=0,
-                                        travel_info=basic_info[:2000]
-                                    )
-                                
-                                else:
-                                    st.warning("❌ Could not identify any features in the image.")
-                                    st.info("Try uploading a clearer image with recognizable landmarks or features.")
+                            # Show location guess
+                            if place_info.get('location'):
+                                st.info(f"**📍 Location Guess:** {place_info['location']}")
                             
-                            # Show detailed analysis in expander
-                            if analysis_mode == "Detailed":
-                                with st.expander("🔍 Detailed Analysis Results"):
-                                    # Show all labels
-                                    if place_info['labels']:
-                                        st.subheader("All Labels")
-                                        for label in place_info['labels'][:15]:
-                                            st.write(f"- {label['description']} ({label['score']:.1%})")
-                                    
-                                    # Show web detection results
-                                    if place_info['web_detection']:
-                                        web = place_info['web_detection']
-                                        
-                                        if web.get('web_entities'):
-                                            st.subheader("Web Entities")
-                                            for entity in web['web_entities'][:5]:
-                                                st.write(f"- {entity['description']}")
-                                        
-                                        if web.get('visually_similar_images'):
-                                            st.subheader("Similar Images")
-                                            for img in web['visually_similar_images'][:3]:
-                                                st.write(f"- [Link]({img['url']})")
-                                        
-                                        if web.get('pages_with_matching_images'):
-                                            st.subheader("Related Pages")
-                                            for page in web['pages_with_matching_images'][:3]:
-                                                st.write(f"- [{page['page_title'][:50]}...]({page['url']})")
-                    
+                            # Generate travel information
+                            st.info("📝 Generating travel information...")
+                            travel_info = vision_client.generate_travel_info(place_info)
+                            
+                            st.markdown("### 🧭 Travel Information")
+                            st.markdown(travel_info)
+                            
+                            # Action buttons
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                maps_url = vision_client.get_google_maps_url(place_info)
+                                if maps_url:
+                                    st.markdown(f"[🗺️ Open in Google Maps]({maps_url})")
+                            
+                            with col2:
+                                search_query = (place_info.get('place_name') or place_info.get('location') or "travel destination").replace(' ', '+')
+                                st.markdown(f"[🔍 Search Online](https://www.google.com/search?q={search_query}+travel)")
+                            
+                            with col3:
+                                if st.button("🗓️ Create Itinerary", key="create_itinerary_btn"):
+                                    destination = place_info.get('place_name') or place_info.get('location') or "This Destination"
+                                    st.session_state['itinerary_destination'] = destination
+                                    st.success(f"Destination '{destination}' saved for itinerary generation!")
+                            
+                            # Save to database
+                            save_image_search(
+                                image_name=uploaded_image.name,
+                                landmark_name=place_info.get('place_name'),
+                                confidence=place_info.get('travel_relevance', 0)/100,
+                                travel_info=travel_info[:2000]
+                            )
+                        
                     except Exception as e:
                         st.error(f"❌ Image analysis failed: {str(e)}")
                         logger.exception("Image recognition error")
@@ -1930,10 +1639,10 @@ elif page == "Image Recognition":
                 4. **Include context** - Show surrounding area
                 5. **Try multiple angles** - Different views can help
                 
-                **Limitations:**
-                - Works best with famous places
-                - May not recognize obscure locations
-                - Indoor/abstract images are harder
+                **Powered by:** Gemini 1.5 Flash Vision
+                - Can analyze complex images
+                - Understands context and relationships
+                - Provides detailed descriptions
                 """)
 
 # -------------------------
@@ -1950,16 +1659,27 @@ elif page == "API Management":
     # Display API Key Validation Status
     st.subheader("API Key Status")
     
-    col1, col2 = st.columns(2)
+    for key_name, validation in KEY_VALIDATION.items():
+        if validation['valid']:
+            st.success(f"**{key_name}**: {validation['message']}")
+        elif "Not configured" in validation['message']:
+            st.warning(f"**{key_name}**: {validation['message']}")
+        else:
+            st.error(f"**{key_name}**: {validation['message']}")
     
-    with col1:
-        for key_name, validation in KEY_VALIDATION.items():
-            if validation['valid']:
-                st.success(f"**{key_name}**: {validation['message']}")
-            elif "Not configured" in validation['message']:
-                st.warning(f"**{key_name}**: {validation['message']}")
+    # Check Gemini Vision separately
+    if gemini_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            models = genai.list_models()
+            vision_models = [m for m in models if 'vision' in m.name.lower()]
+            if vision_models:
+                st.success(f"**GEMINI_VISION**: ✅ Available ({len(vision_models)} vision models)")
             else:
-                st.error(f"**{key_name}**: {validation['message']}")
+                st.warning("**GEMINI_VISION**: ⚠️ No vision models found in your plan")
+        except:
+            st.error("**GEMINI_VISION**: ❌ Failed to check vision capability")
     
     # Display API Usage Statistics
     st.subheader("API Usage Statistics")
@@ -1971,7 +1691,8 @@ elif page == "API Management":
                 st.write(f"**{key_name}**:")
                 st.write(f"  • Total calls: {stats['count']}")
                 st.write(f"  • Errors: {stats['errors']}")
-                st.write(f"  • Last used: {stats['last_used']}")
+                if stats['last_used']:
+                    st.write(f"  • Last used: {stats['last_used'].strftime('%Y-%m-%d %H:%M:%S')}")
                 st.write("---")
     
     # Database API Usage Stats
@@ -1982,8 +1703,9 @@ elif page == "API Management":
         for api_name, total_calls, avg_response_time, error_count in db_stats:
             st.write(f"**{api_name}**:")
             st.write(f"  • Total calls: {total_calls}")
-            st.write(f"  • Avg response time: {avg_response_time:.2f}s")
-            st.write(f"  • Error rate: {(error_count/total_calls*100):.1f}%")
+            if avg_response_time:
+                st.write(f"  • Avg response time: {avg_response_time:.2f}s")
+            st.write(f"  • Error rate: {(error_count/total_calls*100):.1f}%" if total_calls > 0 else "  • Error rate: 0%")
             st.write("---")
     else:
         st.info("No API usage data recorded yet.")
@@ -1993,27 +1715,17 @@ elif page == "API Management":
         st.markdown("""
         ### How to Configure API Keys
         
-        **1. Google Gemini API:**
+        **1. Google Gemini API (Required for chat & vision):**
         - Visit: https://makersuite.google.com/app/apikey
         - Create new API key
         - Add to Streamlit Secrets as `GOOGLE_API_KEY`
         
-        **2. Google Vision API (Service Account):**
-        1. Go to Google Cloud Console: https://console.cloud.google.com
-        2. Create a new project or select existing
-        3. Enable "Cloud Vision API"
-        4. Go to IAM & Admin → Service Accounts
-        5. Create a new service account
-        6. Generate and download JSON key
-        7. Copy the ENTIRE JSON content and add to secrets as `GOOGLE_VISION_JSON`
-        8. Install: `pip install google-cloud-vision`
-        
-        **3. OpenWeather API:**
+        **2. OpenWeather API (Optional):**
         - Visit: https://openweathermap.org/api
         - Sign up for free API key
         - Add to Streamlit Secrets as `OPENWEATHER_API_KEY`
         
-        **4. Amadeus API:**
+        **3. Amadeus API (Optional for flights):**
         - Visit: https://developers.amadeus.com/
         - Create account and new application
         - Add to Streamlit Secrets as:
@@ -2023,29 +1735,12 @@ elif page == "API Management":
         **Streamlit Secrets Format (.streamlit/secrets.toml):**
         ```toml
         GOOGLE_API_KEY = "your_gemini_key_here"
-        
-        GOOGLE_VISION_JSON = '''
-        {
-          "type": "service_account",
-          "project_id": "...",
-          "private_key_id": "...",
-          "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
-          "client_email": "...",
-          "client_id": "...",
-          "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-          "token_uri": "https://oauth2.googleapis.com/token",
-          "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-          "client_x509_cert_url": "...",
-          "universe_domain": "googleapis.com"
-        }
-        '''
-        
         OPENWEATHER_API_KEY = "your_weather_key_here"
         AMADEUS_CLIENT_ID = "your_client_id_here"
         AMADEUS_CLIENT_SECRET = "your_client_secret_here"
         ```
         
-        **Note:** For Vision API, you MUST use triple quotes (`'''`) for the JSON content.
+        **Note:** No Vision API setup needed! Uses Gemini Vision.
         """)
     
     # API Health Check
@@ -2096,12 +1791,20 @@ elif page == "Saved Data":
                 st.write(f"Created: {created_at}")
                 
                 if st.button(f"View Details", key=f"view_{itinerary_id}"):
-                    st.info(f"Full itinerary for {title} would be displayed here. Implement full view functionality.")
+                    # Load full itinerary data
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT itinerary_data FROM itineraries WHERE id = ?", (itinerary_id,))
+                    result = cursor.fetchone()
+                    conn.close()
+                    
+                    if result:
+                        itinerary_data = json.loads(result[0])
+                        st.text_area("Itinerary", itinerary_data.get('itinerary_text', ''), height=300)
                 st.write("---")
     
     with tab3:
         st.subheader("Flight Search History")
-        # Placeholder for flight search history
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT origin, destination, departure_date, results_count, created_at FROM flight_searches ORDER BY created_at DESC LIMIT 10")
@@ -2129,7 +1832,8 @@ elif page == "Saved Data":
                 st.write(f"**Image:** {image_name}")
                 if landmark_name:
                     st.write(f"**Landmark:** {landmark_name}")
-                    st.write(f"**Confidence:** {confidence:.1%}")
+                    if confidence:
+                        st.write(f"**Confidence:** {confidence:.1%}")
                 else:
                     st.write("**Status:** No landmark identified")
                 st.write(f"**Time:** {created_at}")
@@ -2150,14 +1854,6 @@ with st.sidebar:
             else:
                 st.error("❌ Gemini API")
         
-        elif key_name == 'GOOGLE_VISION_API':
-            if validation['valid']:
-                st.success("✅ Vision API")
-            elif "Not configured" in validation['message']:
-                st.info("🖼️ Vision API")
-            else:
-                st.error("❌ Vision API")
-        
         elif key_name == 'OPENWEATHER_API_KEY':
             if validation['valid']:
                 st.success("✅ Weather API")
@@ -2174,6 +1870,14 @@ with st.sidebar:
             else:
                 st.error("❌ Amadeus API")
     
+    # Gemini Vision status
+    if gemini_key and vision_client and vision_client.model:
+        st.success("✅ Gemini Vision")
+    elif gemini_key:
+        st.info("🖼️ Gemini Vision")
+    else:
+        st.info("🤖 Gemini Vision")
+    
     st.markdown("---")
     
     # Show usage warnings
@@ -2183,11 +1887,13 @@ with st.sidebar:
             st.warning(f"⚠️ {usage_stats['GOOGLE_API_KEY']['errors']} API errors")
     
     st.info("""
-    **Security Features:**
-    - 🔐 Encrypted key storage
-    - 📊 Usage tracking
-    - 🚨 Error monitoring
-    - ⚡ Rate limiting
+    **Features:**
+    - 🔍 Web Search
+    - 🌤 Weather
+    - ✈️ Flight Search
+    - 🖼️ Image Recognition
+    - 📄 Document RAG
+    - 🗓️ Itinerary Generator
     """)
     
     # Quick stats
@@ -2208,4 +1914,4 @@ with st.sidebar:
         st.caption(f"📁 {len(itineraries)} saved itineraries")
     
     st.markdown("---")
-    st.caption(f"v1.1.0 • Last updated: {datetime.now().strftime('%Y-%m-%d')}")
+    st.caption(f"v2.0.0 • Last updated: {datetime.now().strftime('%Y-%m-%d')}")
