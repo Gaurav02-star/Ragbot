@@ -185,11 +185,11 @@ except Exception as e:
 # -------------------------
 PERSIST_DIR = "./chroma_db"
 EMBEDDING_MODEL_NAME = "models/text-embedding-004"  # ✅ FIXED
+# CORRECTED - Each model should be a separate string in the list
 CHAT_MODEL_CANDIDATES = [
-    "gemini-1.5-flash"
-    "gemini-1.5-pro-latest",    # ✅ FIXED
-    # ✅ FIXED
-    
+    "gemini-1.5-flash-latest",    # ✅ Separate string
+    "gemini-1.5-pro-latest",      # ✅ Separate string
+    "gemini-1.0-pro-latest",      # ✅ Separate string
 ]
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
@@ -979,42 +979,59 @@ def simple_text_search(text: str, query: str, top_k: int = 3) -> List[str]:
     scored_sentences.sort(reverse=True, key=lambda x: x[0])
     return [sentence for _, sentence in scored_sentences[:top_k]]
 
-def create_embedding_model():
-    """Create embedding model with quota error handling"""
+def create_chat_llm(temperature: float = 0.3):
+    """Create LLM with fallback for different model names"""
+    last_error = None
+    
+    # CORRECTED: Use proper model names that actually exist
+    model_candidates = [
+        "gemini-1.5-flash-latest",    # ✅ Fast and reliable
+        "gemini-1.5-pro-latest",      # ✅ More capable
+        "gemini-1.0-pro-latest",      # ✅ Legacy but works
+    ]
+    
+    logger.info(f"Trying models in order: {model_candidates}")
+    
+    for model_name in model_candidates:
+        try:
+            logger.info(f"Attempting to initialize model: {model_name}")
+            
+            # Create the LLM with this specific model name
+            llm = ChatGoogleGenerativeAI(
+                model=model_name,  # ✅ Pass just the model name string
+                temperature=temperature,
+                google_api_key=api_manager.get_key('GOOGLE_API_KEY')
+            )
+            
+            # Test if it works
+            rate_limiter.wait_if_needed()
+            test_response = llm.invoke("Say 'Hello'")
+            
+            if test_response:
+                logger.info(f"✅ Successfully loaded model: {model_name}")
+                return llm
+                
+        except Exception as e:
+            last_error = e
+            logger.warning(f"❌ Model {model_name} failed: {e}")
+            continue
+    
+    # If all models fail
+    error_msg = f"No working model found. Tried: {model_candidates}. Last error: {last_error}"
+    logger.error(error_msg)
+    st.error(f"❌ {error_msg}")
+    
+    # Try one more time with a direct call to see available models
     try:
-        # EXPLICITLY set the model name - try multiple variants
-        model_names = [
-            "models/text-embedding-004",  # Newest
-            "text-embedding-004",         # Without models/ prefix
-            "models/embedding-001",       # Older but might work
-        ]
-        
-        for model_name in model_names:
-            try:
-                logger.info(f"Trying embedding model: {model_name}")
-                embedding_model = GoogleGenerativeAIEmbeddings(
-                    model=model_name,
-                    google_api_key=api_manager.get_key('GOOGLE_API_KEY')
-                )
-                # Test the embedding
-                test_embedding = embedding_model.embed_query("test")
-                logger.info(f"✅ Successfully loaded embedding model: {model_name}")
-                return embedding_model
-            except Exception as e:
-                logger.warning(f"Embedding model {model_name} failed: {e}")
-                continue
-        
-        # If all fail
-        st.warning("⚠️ All embedding models failed. Using keyword-based search instead.")
-        return None
-        
-    except Exception as e:
-        if "quota" in str(e).lower() or "429" in str(e):
-            st.warning("⚠️ Embedding API quota exceeded. Using keyword-based search instead.")
-            return None
-        else:
-            logger.error(f"Embedding model error: {e}")
-            return None
+        import google.generativeai as genai
+        genai.configure(api_key=api_manager.get_key('GOOGLE_API_KEY'))
+        models = genai.list_models()
+        available = [m.name.replace("models/", "") for m in models]
+        st.info(f"📋 Models available to you: {available}")
+    except:
+        pass
+    
+    raise RuntimeError(error_msg)
 
 def build_or_load_vectorstore_from_chunks(chunks: List[str]):
     """Create or load a persisted Chroma vectorstore with quota handling"""
