@@ -189,7 +189,7 @@ CHAT_MODEL_CANDIDATES = [
     "gemini-1.5-flash-latest"
     "gemini-1.5-pro-latest",    # ✅ FIXED
     "gemini-1.0-pro-latest",    # ✅ FIXED
-    "gemini-pro",
+    
 ]
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
