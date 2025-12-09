@@ -19,7 +19,8 @@ from langchain_community.tools import DuckDuckGoSearchRun
 
 # LangChain agent + Tool helpers
 from langchain_community.tools import Tool
-from langchain.agents import initialize_agent, AgentType
+from langchain_community.agent_toolkits.react.base import create_react_agent
+
 
 # -------------------------
 # Logging
