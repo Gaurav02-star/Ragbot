@@ -184,10 +184,10 @@ except Exception as e:
 # Constants / Persistence
 # -------------------------
 PERSIST_DIR = "./chroma_db"
-EMBEDDING_MODEL_NAME = "models/embedding-001"
+EMBEDDING_MODEL_NAME = "models/text-embedding-004"  # ✅ FIXED
 CHAT_MODEL_CANDIDATES = [
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
+     "gemini-1.5-pro-latest",    # ✅ FIXED
+    "gemini-1.0-pro-latest",    # ✅ FIXED
     "gemini-pro",
 ]
 CHUNK_SIZE = 500
@@ -465,13 +465,11 @@ class VisionRecognition:
                         st.write(f"- {name}")
                 
                 # Prioritize vision-capable models
-                vision_model_patterns = [
-                    "gemini-1.5-pro",  # Latest 1.5 pro
-                    "gemini-1.0-pro-vision",  # Vision-specific
-                    "gemini-pro-vision",  # Legacy vision
-                    "gemini-1.5-flash",  # Flash variant
-                    "gemini-1.0-pro",  # Some pro models
-                    "gemini-pro",  # Fallback
+                vision_models_patterns = [
+                    "gemini-1.5-pro-latest",      # Most capable
+                    "gemini-1.0-pro-vision-latest", # Vision-specific
+                    "gemini-1.0-pro-latest",      # General purpose
+                    "gemini-pro",                 # Legacy
                 ]
                 
                 for pattern in vision_model_patterns:
