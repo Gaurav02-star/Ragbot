@@ -368,7 +368,104 @@ def init_database():
     ''')
     conn.commit()
     conn.close()
+def get_city_code_amadeus(city_name: str):
+    """Get IATA city code from Amadeus"""
+    try:
+        token = get_amadeus_token()
+        if not token:
+            return None
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        url = "https://test.api.amadeus.com/v1/reference-data/locations"
+        params = {
+            "keyword": city_name,
+            "subType": "CITY,AIRPORT",
+            "page[limit]": 5
+        }
+        
+        response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus", timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("data"):
+                # Return first city result
+                for location in data["data"]:
+                    if location.get("subType") == "CITY":
+                        return location["iataCode"]
+                # If no city found, return first airport code
+                if data["data"]:
+                    return data["data"][0].get("iataCode")
+        return None
+    except Exception as e:
+        logger.error(f"City code search error: {e}")
+        return None
 
+def get_mock_hotel_data(city_name: str = "Sample City"):
+    """Provide mock hotel data for testing"""
+    return {
+        "data": [
+            {
+                "hotel": {
+                    "name": f"Grand {city_name} Hotel",
+                    "rating": 4.3,
+                    "address": {
+                        "cityName": city_name,
+                        "lines": ["123 Main Street"],
+                        "postalCode": "10001"
+                    },
+                    "description": {
+                        "text": f"A luxurious hotel in the heart of {city_name} with premium amenities."
+                    },
+                    "amenities": ["Free WiFi", "Swimming Pool", "Fitness Center", "Restaurant", "Spa"]
+                },
+                "offers": [{
+                    "price": {
+                        "total": "150",
+                        "currency": "USD"
+                    },
+                    "room": {
+                        "typeEstimated": {
+                            "category": "Standard Room",
+                            "bedType": "King Bed"
+                        }
+                    },
+                    "guests": {
+                        "adults": 2
+                    }
+                }]
+            },
+            {
+                "hotel": {
+                    "name": f"{city_name} Central Plaza",
+                    "rating": 4.0,
+                    "address": {
+                        "cityName": city_name,
+                        "lines": ["456 Central Avenue"],
+                        "postalCode": "10002"
+                    },
+                    "description": {
+                        "text": f"Modern hotel with great city views in downtown {city_name}."
+                    },
+                    "amenities": ["Free WiFi", "Business Center", "Bar", "Room Service"]
+                },
+                "offers": [{
+                    "price": {
+                        "total": "95",
+                        "currency": "USD"
+                    },
+                    "room": {
+                        "typeEstimated": {
+                            "category": "Deluxe Room",
+                            "bedType": "Queen Bed"
+                        }
+                    },
+                    "guests": {
+                        "adults": 2
+                    }
+                }]
+            }
+        ]
+    }
 def save_search(query: str, search_type: str, result_text: str = ""):
     """Save search query and results to database"""
     conn = sqlite3.connect(DB_PATH)
@@ -1479,22 +1576,28 @@ def debug_hotel_search(city_name: str):
         token = get_amadeus_token()
         st.write(f"✅ Token obtained: {token[:20]}...")
         
-        # Try to get city code
-        city_code = get_city_code_amadeus(city_name)
-        st.write(f"✅ City code for '{city_name}': {city_code}")
+        # Try to get city code - check if function exists
+        try:
+            city_code = get_city_code_amadeus(city_name)
+            st.write(f"✅ City code for '{city_name}': {city_code}")
+        except NameError:
+            st.warning("❌ Function 'get_city_code_amadeus' not found. Using city name as code.")
+            city_code = city_name.upper()[:3]
+            st.write(f"⚠️ Using fallback city code: {city_code}")
         
         if city_code:
             # Test the hotel search API directly
             headers = {"Authorization": f"Bearer {token}"}
             
-            # Try v3 endpoint (most current)
-            url = "https://test.api.amadeus.com/v3/shopping/hotel-offers"
+            # Try v2 endpoint (most reliable for free tier)
+            url = "https://test.api.amadeus.com/v2/shopping/hotel-offers"
             params = {
                 "cityCode": city_code,
                 "checkInDate": "2025-12-20",  # Fixed date for testing
                 "checkOutDate": "2025-12-25",
                 "adults": 2,
-                "roomQuantity": 1
+                "roomQuantity": 1,
+                "max": 5  # Limit results
             }
             
             st.write(f"🔍 Testing URL: {url}")
