@@ -1106,14 +1106,6 @@ class VisionRecognition:
                 is_square = abs(image.width - image.height) < 10
                 aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
                 
-                # Ask user for description
-                st.session_state['current_image'] = {
-                    'format': image_format,
-                    'dimensions': dimensions,
-                    'color_mode': color_mode,
-                    'aspect': aspect
-                }
-                
                 # Show image properties and ask for description
                 analysis = f"""
 ## 🖼️ Basic Image Analysis
@@ -1135,6 +1127,18 @@ Since Gemini Vision is not available, please describe what you see in the image:
 
 **Note:** Once you describe the image, I can provide travel information about it!
 """
+                
+                # Store image properties in session state for later use
+                if 'image_analysis' not in st.session_state:
+                    st.session_state['image_analysis'] = {}
+                
+                st.session_state['image_analysis']['current_image'] = {
+                    'format': image_format,
+                    'dimensions': dimensions,
+                    'color_mode': color_mode,
+                    'aspect': aspect,
+                    'image_name': image_file.name if hasattr(image_file, 'name') else 'uploaded_image'
+                }
                 
                 return {
                     'description': analysis,
@@ -1300,6 +1304,81 @@ Unable to process the uploaded image. Please check:
             'initialization_error': self.initialization_error,
             'text_only_mode': self.text_only_mode
         }
+
+# Initialize Vision client
+gemini_key = api_manager.get_key('GOOGLE_API_KEY')
+vision_client = VisionRecognition(gemini_key) if gemini_key else None
+
+# -------------------------
+# Mock Hotel Data for Fallback
+# -------------------------
+def get_mock_hotel_data(city_name: str = "Sample City"):
+    """Provide mock hotel data for testing"""
+    return {
+        "data": [
+            {
+                "hotel": {
+                    "name": f"Grand {city_name} Hotel",
+                    "rating": 4.3,
+                    "address": {
+                        "cityName": city_name,
+                        "lines": ["123 Main Street"],
+                        "postalCode": "10001"
+                    },
+                    "description": {
+                        "text": f"A luxurious hotel in the heart of {city_name} with premium amenities."
+                    },
+                    "amenities": ["Free WiFi", "Swimming Pool", "Fitness Center", "Restaurant", "Spa"]
+                },
+                "offers": [{
+                    "price": {
+                        "total": "150",
+                        "currency": "USD"
+                    },
+                    "room": {
+                        "typeEstimated": {
+                            "category": "Standard Room",
+                            "bedType": "King Bed"
+                        }
+                    },
+                    "guests": {
+                        "adults": 2
+                    }
+                }]
+            },
+            {
+                "hotel": {
+                    "name": f"{city_name} Central Plaza",
+                    "rating": 4.0,
+                    "address": {
+                        "cityName": city_name,
+                        "lines": ["456 Central Avenue"],
+                        "postalCode": "10002"
+                    },
+                    "description": {
+                        "text": f"Modern hotel with great city views in downtown {city_name}."
+                    },
+                    "amenities": ["Free WiFi", "Business Center", "Bar", "Room Service"]
+                },
+                "offers": [{
+                    "price": {
+                        "total": "95",
+                        "currency": "USD"
+                    },
+                    "room": {
+                        "typeEstimated": {
+                            "category": "Deluxe Room",
+                            "bedType": "Queen Bed"
+                        }
+                    },
+                    "guests": {
+                        "adults": 2
+                    }
+                }]
+            }
+        ]
+    }
+
 # -------------------------
 # Streamlit Navigation
 # -------------------------
@@ -1681,14 +1760,35 @@ Provide a detailed and helpful answer:"""
                     st.error(f"Error: {e}")
 
 # -------------------------
-# PAGE: Image Recognition
+# PAGE: Image Recognition - FIXED VERSION
 # -------------------------
 elif page == "Image Recognition":
     st.header("🖼️ Image Recognition for Travel")
     
+    # Initialize session state for image analysis
+    if 'image_analysis' not in st.session_state:
+        st.session_state['image_analysis'] = {}
+    
+    # Initialize vision client if not already done
+    if vision_client is None:
+        gemini_key = api_manager.get_key('GOOGLE_API_KEY')
+        if gemini_key:
+            vision_client = VisionRecognition(gemini_key)
+        else:
+            vision_client = None
+    
     if not vision_client:
         st.error("❌ Gemini API key not configured.")
         st.info("Add GOOGLE_API_KEY to your `.streamlit/secrets.toml` file")
+        st.markdown("""
+        ### How to get a Gemini API key:
+        1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
+        2. Create a new API key
+        3. Add it to your `.streamlit/secrets.toml` file:
+        ```
+        GOOGLE_API_KEY = "your-api-key-here"
+        ```
+        """)
     else:
         # Show status
         status = vision_client.get_status()
@@ -1711,7 +1811,12 @@ elif page == "Image Recognition":
         # Show detailed status if requested
         if st.session_state.get('show_status', False):
             with st.expander("🔧 System Status", expanded=True):
-                st.json(status)
+                st.write(f"**Model Name:** {status.get('model_name', 'None')}")
+                st.write(f"**Model Initialized:** {status.get('model_initialized', False)}")
+                st.write(f"**Vision Available:** {status.get('vision_available', False)}")
+                st.write(f"**Text Only Mode:** {status.get('text_only_mode', True)}")
+                if status.get('initialization_error'):
+                    st.write(f"**Error:** {status.get('initialization_error')}")
         
         st.info("📸 Upload an image and describe what you see to get travel information!")
         
@@ -1719,7 +1824,7 @@ elif page == "Image Recognition":
         uploaded_image = st.file_uploader(
             "Choose an image file", 
             type=["jpg", "jpeg", "png", "webp"],
-            help="Upload an image of a travel destination"
+            help="Upload an image of a travel destination (Max 20MB)"
         )
         
         if uploaded_image:
@@ -1741,81 +1846,277 @@ elif page == "Image Recognition":
                     st.write("Unable to read image details")
             
             # Analyze button
-            if st.button("🔍 Analyze Image", type="primary"):
+            if st.button("🔍 Analyze Image", type="primary", key="analyze_button"):
                 with st.spinner("Analyzing image..."):
                     result = vision_client.analyze_image(uploaded_image)
                     
-                    if result.get('source') == 'manual_input_required':
-                        st.markdown("---")
-                        st.subheader("📊 Basic Analysis")
-                        st.markdown(result['description'])
-                        
-                        # Ask for user description
-                        st.markdown("---")
-                        st.subheader("✍️ Describe What You See")
-                        
-                        description = st.text_area(
-                            "Describe the image (e.g., 'This is the Eiffel Tower in Paris, France'):",
-                            height=150,
-                            placeholder="Describe the landmark, location, and what you see..."
-                        )
-                        
-                        if description:
-                            if st.button("🚀 Generate Travel Info", type="primary"):
-                                with st.spinner("Generating travel information..."):
-                                    travel_info = vision_client.analyze_with_description(
-                                        description, 
-                                        result.get('image_properties')
-                                    )
-                                    
-                                    st.markdown("---")
-                                    st.subheader("🌍 Travel Information")
-                                    
-                                    if travel_info.get('success'):
-                                        st.markdown(travel_info['description'])
-                                        
-                                        # Save to database
-                                        try:
-                                            save_image_search(
-                                                image_name=uploaded_image.name,
-                                                landmark_name=None,
-                                                confidence=0.5,
-                                                travel_info=travel_info['description'][:2000]
-                                            )
-                                            st.toast("✅ Analysis saved!", icon="✅")
-                                        except:
-                                            pass
-                                    else:
-                                        st.error(travel_info.get('description', "Failed to generate info"))
-                    else:
-                        # Direct result
-                        st.markdown("---")
-                        st.subheader("📊 Analysis Results")
-                        st.markdown(result['description'])
+                    # Store result in session state
+                    st.session_state['image_analysis']['last_result'] = result
+                    st.session_state['image_analysis']['image_uploaded'] = True
+                    st.session_state['image_analysis']['current_image_name'] = uploaded_image.name
         
-        # Alternative approach section
-        with st.expander("💡 How to Get Better Results"):
+        # Show analysis results if available
+        if 'last_result' in st.session_state.get('image_analysis', {}):
+            result = st.session_state['image_analysis']['last_result']
+            
+            st.markdown("---")
+            st.subheader("📊 Basic Analysis")
+            st.markdown(result.get('description', 'No description available'))
+            
+            # Show manual input section if needed
+            if result.get('source') == 'manual_input_required':
+                st.markdown("---")
+                st.subheader("✍️ Describe What You See")
+                
+                # Text area for description
+                description = st.text_area(
+                    "Describe the image (e.g., 'This is the Eiffel Tower in Paris, France'):",
+                    height=150,
+                    placeholder="Describe the landmark, location, and what you see...",
+                    key="image_description"
+                )
+                
+                if description:
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        if st.button("🚀 Generate Travel Info", type="primary", key="generate_travel_info"):
+                            with st.spinner("Generating travel information..."):
+                                # Get image properties from session state
+                                image_props = st.session_state.get('image_analysis', {}).get('current_image', {})
+                                
+                                travel_info = vision_client.analyze_with_description(
+                                    description, 
+                                    image_props
+                                )
+                                
+                                # Store travel info in session state
+                                st.session_state['image_analysis']['travel_info'] = travel_info
+                                st.session_state['image_analysis']['description_provided'] = True
+                                st.rerun()
+                    
+                    with col2:
+                        if st.button("Clear Description", key="clear_description"):
+                            if 'image_description' in st.session_state:
+                                del st.session_state['image_description']
+                            if 'travel_info' in st.session_state.get('image_analysis', {}):
+                                del st.session_state['image_analysis']['travel_info']
+                            st.rerun()
+            
+            # Show travel information if generated
+            if 'travel_info' in st.session_state.get('image_analysis', {}):
+                travel_info = st.session_state['image_analysis']['travel_info']
+                
+                st.markdown("---")
+                st.subheader("🌍 Travel Information")
+                
+                if travel_info.get('success'):
+                    st.markdown(travel_info['description'])
+                    
+                    # Save to database
+                    try:
+                        image_name = st.session_state['image_analysis'].get('current_image_name', 'uploaded_image')
+                        save_image_search(
+                            image_name=image_name,
+                            landmark_name=None,
+                            confidence=0.5,
+                            travel_info=travel_info['description'][:2000]
+                        )
+                        st.toast("✅ Analysis saved to history!", icon="✅")
+                    except Exception as save_error:
+                        logger.error(f"Failed to save image search: {save_error}")
+                    
+                    # Download button
+                    travel_text = f"Travel Analysis for {image_name}\n\n{travel_info['description']}"
+                    st.download_button(
+                        label="📥 Download Analysis",
+                        data=travel_text,
+                        file_name=f"travel_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                        mime="text/plain"
+                    )
+                else:
+                    st.error(travel_info.get('description', "Failed to generate travel information"))
+        
+        # History section
+        with st.expander("📚 Recent Image Analyses"):
+            recent_searches = get_image_searches(5)
+            
+            if not recent_searches:
+                st.info("No image analyses saved yet.")
+            else:
+                for image_name, landmark_name, confidence, created_at in recent_searches:
+                    col_a, col_b = st.columns([3, 1])
+                    with col_a:
+                        st.write(f"**{image_name}**")
+                        if confidence:
+                            st.write(f"Confidence: {confidence:.0%}")
+                    with col_b:
+                        st.write(f"_{created_at}_")
+                    st.write("---")
+        
+        # Tips section
+        with st.expander("💡 How to Get Best Results"):
             st.markdown("""
-            ### Option 1: Manual Description (Current Method)
-            1. Upload your image
-            2. Describe what you see
-            3. Get AI-generated travel info
-            
-            ### Option 2: Enable Gemini Vision
-            1. Get a new API key from [Google AI Studio](https://makersuite.google.com/)
-            2. Make sure to enable billing
-            3. Enable required APIs in Google Cloud Console
-            
-            ### Option 3: Use External Tools
-            - **Google Images**: Drag & drop to [images.google.com]
-            - **TripAdvisor**: Use their visual search
-            - **Google Lens**: Mobile app for image recognition
+            ### Current Method (Text-Only):
+            1. **Upload a clear image** of a landmark or travel destination
+            2. **Describe what you see** in detail
+            3. **Get AI-generated travel information** based on your description
             
             ### Sample Descriptions:
-            - "This is the Taj Mahal in Agra, India - a white marble mausoleum"
-            - "I see the Eiffel Tower in Paris with cityscape in background"
-            - "Beautiful beach with palm trees, likely in Thailand or Maldives"
+            - "This is the Taj Mahal in Agra, India - a white marble mausoleum with gardens"
+            - "I see the Eiffel Tower in Paris at night with lights"
+            - "Beautiful beach with palm trees and turquoise water, likely in Thailand"
+            - "Ancient ruins with stone columns, possibly Greek or Roman"
+            
+            ### For Better Accuracy:
+            - Be specific about location (city, country)
+            - Mention architectural features
+            - Describe the surroundings
+            - Note any distinctive colors or styles
             """)
+        
+        # Footer
+        st.markdown("---")
+        st.caption("ℹ️ Note: This system uses text-based AI since Gemini Vision is not available with your current API key.")
+
+# -------------------------
+# PAGE: Hotel Booking
+# -------------------------
+elif page == "Hotel Booking":
+    st.header("🏨 Hotel Booking")
+    
+    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
+        st.warning("⚠️ Amadeus API not configured or invalid.")
+        st.stop()
+    
+    tab1, tab2 = st.tabs(["🔍 Search Hotels", "💾 Saved Hotels"])
+    
+    with tab1:
+        st.subheader("Search Hotels Worldwide")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            city = st.text_input(
+                "City Name",
+                placeholder="e.g., Paris, New York, Tokyo"
+            )
+            
+            check_in = st.date_input(
+                "Check-in Date",
+                value=datetime.now() + timedelta(days=7),
+                min_value=datetime.now()
+            )
+        
+        with col2:
+            country = st.text_input(
+                "Country (Optional)",
+                placeholder="e.g., France, USA"
+            )
+            
+            check_out = st.date_input(
+                "Check-out Date",
+                value=datetime.now() + timedelta(days=14),
+                min_value=check_in + timedelta(days=1)
+            )
+        
+        guests = st.number_input("Number of Guests", min_value=1, max_value=10, value=2)
+        
+        if st.button("🔍 Search Hotels", type="primary"):
+            if not city.strip():
+                st.warning("Please enter a city name.")
+            else:
+                with st.spinner(f"Searching hotels in {city}..."):
+                    try:
+                        city_code = get_city_code_amadeus(city)
+                        
+                        if not city_code:
+                            st.error(f"❌ Could not find city '{city}' in Amadeus database.")
+                        else:
+                            check_in_str = check_in.strftime("%Y-%m-%d")
+                            check_out_str = check_out.strftime("%Y-%m-%d")
+                            
+                            hotel_data = search_hotel_offers_amadeus(
+                                city_code=city_code,
+                                check_in=check_in_str,
+                                check_out=check_out_str,
+                                guests=guests
+                            )
+                            
+                            if "error" in hotel_data:
+                                st.error(f"❌ Hotel search failed: {hotel_data['error']}")
+                                st.warning("⚠️ Showing sample hotels for demonstration...")
+                                hotel_data = get_mock_hotel_data(city)
+                            elif not hotel_data.get('data'):
+                                st.warning(f"No hotels found in {city} for the selected dates.")
+                                hotel_data = get_mock_hotel_data(city)
+                            
+                            hotels = hotel_data['data']
+                            st.success(f"✅ Found {len(hotels)} hotels in {city}")
+                            
+                            save_hotel_search(city, check_in_str, check_out_str, guests, len(hotels))
+                            
+                            for i, hotel in enumerate(hotels[:10]):
+                                hotel_info = hotel.get('hotel', {})
+                                offers = hotel.get('offers', [])
+                                
+                                if offers:
+                                    offer = offers[0]
+                                    price_info = offer.get('price', {})
+                                    price = price_info.get('total', 'N/A')
+                                    currency = price_info.get('currency', 'USD')
+                                    
+                                    with st.expander(f"🏨 {hotel_info.get('name', 'Hotel')} - ${price} {currency}"):
+                                        col_left, col_right = st.columns([3, 1])
+                                        
+                                        with col_left:
+                                            st.write(f"**Hotel:** {hotel_info.get('name', 'N/A')}")
+                                            
+                                            if hotel_info.get('rating'):
+                                                rating = hotel_info['rating']
+                                                st.write(f"**Rating:** {rating}/5")
+                                            
+                                            if hotel_info.get('address'):
+                                                address = hotel_info['address']
+                                                lines = address.get('lines', [])
+                                                if lines:
+                                                    st.write(f"**Address:** {lines[0]}")
+                                                city_name = address.get('cityName', '')
+                                                if city_name:
+                                                    st.write(f"**City:** {city_name}")
+                                        
+                                        with col_right:
+                                            st.write(f"**Price:** ${price} {currency}")
+                                            st.write(f"**For:** {guests} guests")
+                                        
+                                        if st.button("💾 Save", key=f"save_{i}"):
+                                            save_hotel_favorite(
+                                                hotel_info.get('name', 'Hotel'),
+                                                city,
+                                                float(price) if price != 'N/A' else 0,
+                                                currency
+                                            )
+                                            st.success("Hotel saved to favorites!")
+                    
+                    except Exception as e:
+                        st.error(f"❌ Hotel search error: {str(e)}")
+    
+    with tab2:
+        st.subheader("Saved Hotel Favorites")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT hotel_name, city, price, currency, saved_at FROM hotel_favorites ORDER BY saved_at DESC")
+        favorites = cursor.fetchall()
+        conn.close()
+        
+        if not favorites:
+            st.info("No hotels saved yet.")
+        else:
+            for hotel_name, city, price, currency, saved_at in favorites:
+                st.write(f"**🏨 {hotel_name}**")
+                st.write(f"**City:** {city} | **Price:** {currency} {price}")
+                st.write(f"**Saved:** {saved_at}")
+                st.write("---")
+
 # -------------------------
 # PAGE: API Management
 # -------------------------
@@ -2005,7 +2306,7 @@ with st.sidebar:
     
     if gemini_key and vision_client and vision_client.vision_available:
         st.success("✅ Gemini Vision")
-    elif gemini_key:
+    elif gemini_key and vision_client and vision_client.model is not None:
         st.info("🤖 Gemini Text")
     else:
         st.info("🤖 No Gemini")
@@ -2024,4 +2325,4 @@ with st.sidebar:
     """)
     
     st.markdown("---")
-    st.caption(f"v2.0.0 • Last updated: {datetime.now().strftime('%Y-%m-%d')}")
+    st.caption(f"v2.0.0 • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
