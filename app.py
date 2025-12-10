@@ -510,68 +510,68 @@ def get_amadeus_token():
         return None
 
 def search_hotel_offers_amadeus(city_code: str, check_in: str, check_out: str, guests: int = 2):
-    """Search for hotel offers using Amadeus API"""
+    """Search for hotel offers using Amadeus API - SIMPLIFIED VERSION"""
     try:
+        # 1. Get access token
         token = get_amadeus_token()
         if not token:
             return {"error": "Failed to authenticate with Amadeus API"}
         
         headers = {"Authorization": f"Bearer {token}"}
         
-        # Use Hotel Offers API
-        url = "https://test.api.amadeus.com/v3/shopping/hotel-offers"
+        # 2. Use v2 endpoint (most reliable for free tier)
+        url = "https://test.api.amadeus.com/v2/shopping/hotel-offers"
+        
+        # 3. SIMPLE parameters only
         params = {
-            "cityCode": city_code,
+            "cityCode": city_code.upper(),  # Ensure uppercase
             "checkInDate": check_in,
             "checkOutDate": check_out,
             "adults": guests,
             "roomQuantity": 1,
-            "bestRateOnly": True,
-            "sort": "PRICE",
-            "radius": 20,
-            "radiusUnit": "KM"
+            "max": 10  # Limit results
         }
         
+        # 4. Make the request
         response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus_Hotels", timeout=15)
         
+        # 5. Handle response
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            
+            # Log for debugging
+            logger.info(f"Hotel search successful for {city_code}")
+            if data.get('data'):
+                logger.info(f"Found {len(data['data'])} hotels")
+            else:
+                logger.warning("No hotels found in response")
+                
+            return data
+            
+        elif response.status_code == 400:
+            # Parse the error
+            try:
+                error_data = response.json()
+                logger.error(f"Hotel API 400 error: {error_data}")
+                
+                # Common 400 errors and fixes:
+                if "cityCode" in str(error_data):
+                    return {"error": f"Invalid city code '{city_code}'. Try a different city or use airport code."}
+                elif "date" in str(error_data):
+                    return {"error": "Invalid date format or dates in the past. Use future dates."}
+                else:
+                    return {"error": f"API error: {error_data}"}
+                    
+            except:
+                return {"error": f"API error 400: {response.text}"}
+                
         else:
-            logger.error(f"Hotel search failed: {response.status_code} - {response.text}")
+            logger.error(f"Hotel API error {response.status_code}: {response.text}")
             return {"error": f"API error: {response.status_code}"}
             
     except Exception as e:
         logger.error(f"Hotel search error: {e}")
-        return {"error": str(e)}
-
-def get_city_code_amadeus(city_name: str):
-    """Get IATA city code from Amadeus"""
-    try:
-        token = get_amadeus_token()
-        if not token:
-            return None
-        
-        headers = {"Authorization": f"Bearer {token}"}
-        url = "https://test.api.amadeus.com/v1/reference-data/locations"
-        params = {
-            "keyword": city_name,
-            "subType": "CITY,AIRPORT",
-            "page[limit]": 5
-        }
-        
-        response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus", timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("data"):
-                # Return first city result
-                for location in data["data"]:
-                    if location.get("subType") == "CITY":
-                        return location["iataCode"]
-        return None
-    except Exception as e:
-        logger.error(f"City code search error: {e}")
-        return None
+        return {"error": f"Hotel search failed: {str(e)}"}
 # Initialize database
 init_database()
 
@@ -1473,7 +1473,51 @@ def debug_model_loading():
     
     except Exception as e:
         st.error(f"Error checking models: {e}")
-
+def debug_hotel_search(city_name: str):
+    """Debug function to test hotel search"""
+    try:
+        token = get_amadeus_token()
+        st.write(f"✅ Token obtained: {token[:20]}...")
+        
+        # Try to get city code
+        city_code = get_city_code_amadeus(city_name)
+        st.write(f"✅ City code for '{city_name}': {city_code}")
+        
+        if city_code:
+            # Test the hotel search API directly
+            headers = {"Authorization": f"Bearer {token}"}
+            
+            # Try v3 endpoint (most current)
+            url = "https://test.api.amadeus.com/v3/shopping/hotel-offers"
+            params = {
+                "cityCode": city_code,
+                "checkInDate": "2025-12-20",  # Fixed date for testing
+                "checkOutDate": "2025-12-25",
+                "adults": 2,
+                "roomQuantity": 1
+            }
+            
+            st.write(f"🔍 Testing URL: {url}")
+            st.write(f"📋 Parameters: {params}")
+            
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            
+            st.write(f"📊 Response Status: {response.status_code}")
+            st.write(f"📝 Response Text: {response.text[:500]}")
+            
+            if response.status_code == 200:
+                st.success("✅ Hotel API is working!")
+                data = response.json()
+                return data
+            else:
+                st.error("❌ Hotel API returned an error")
+                return {"error": response.text}
+        
+        return {"error": "Could not get city code"}
+        
+    except Exception as e:
+        st.error(f"❌ Debug error: {e}")
+        return {"error": str(e)}
 # -------------------------
 # Streamlit Navigation
 # -------------------------
@@ -1489,7 +1533,7 @@ page = st.sidebar.radio("Go to", [
     "API Management",
     "Saved Data"
 ])
-    
+
 # -------------------------
 # PAGE: Travel Search
 # -------------------------
@@ -2251,6 +2295,50 @@ elif page == "Hotel Booking":
                 )
         
         # Search button
+        # In your Hotel Booking page, add this:
+
+# Debug button (add near the search button)
+        if st.button("🐛 Debug Hotel Search", type="secondary"):
+            debug_data = debug_hotel_search(city)
+            st.json(debug_data)
+
+# In your main search, update the error handling:
+        if "error" in hotel_data:
+            error_msg = hotel_data['error']
+            st.error(f"❌ Hotel search failed: {error_msg}")
+    
+    # Specific troubleshooting based on error
+            if "city code" in error_msg.lower():
+                st.info("""
+        💡 **City Code Issues:**
+        1. Try using the **airport code** instead (e.g., "DEL" for Delhi)
+        2. Try major cities only: "New York", "London", "Paris", "Tokyo"
+        3. Some cities may not be supported in Amadeus hotel database
+        """)
+        
+        # Let user enter airport code directly
+                airport_code = st.text_input("Or enter 3-letter airport code:", "DEL")
+                if st.button("Try with airport code"):
+            # Retry with airport code
+                    hotel_data = search_hotel_offers_amadeus(
+                city_code=airport_code.upper(),
+                check_in=check_in_str,
+                check_out=check_out_str,
+                guests=guests
+            )
+            
+            elif "date" in error_msg.lower():
+                st.info("""
+        💡 **Date Issues:**
+        1. Check-out must be after check-in
+        2. Dates must be in the future
+        3. Use format YYYY-MM-DD
+        4. Try dates at least 1 week from now
+        """)
+    
+    # Show mock data for testing
+            st.warning("Showing sample data for demonstration:")
+            hotel_data = get_mock_hotel_data()
         if st.button("🔍 Search Hotels", type="primary", use_container_width=True):
             if not city.strip():
                 st.warning("Please enter a city name.")
