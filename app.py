@@ -20,6 +20,134 @@ from PIL import Image
 import io
 
 # -------------------------
+# Custom CSS for Modern UI
+# -------------------------
+def load_custom_css():
+    st.markdown("""
+    <style>
+    /* Main app styling */
+    .main {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Card styling - Updated for 8 cards */
+    .stButton > button {
+        background: white;
+        color: #667eea;
+        border: 2px solid #e2e8f0;
+        border-radius: 16px;
+        padding: 15px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        width: 100%;
+        height: 110px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        font-size: 0.9rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        border-color: #667eea;
+        background: #f7fafc;
+    }
+    
+    /* Title styling */
+    h1 {
+        color: white !important;
+        text-align: center;
+        font-size: 3rem !important;
+        font-weight: 800 !important;
+        margin-bottom: 0.5rem !important;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Subtitle */
+    .subtitle {
+        text-align: center;
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 1.2rem;
+        margin-bottom: 2rem;
+    }
+    
+    /* Section headers */
+    h2, h3 {
+        color: white !important;
+    }
+    
+    /* Info boxes */
+    .stAlert {
+        border-radius: 12px;
+        border: none;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Input fields */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        border-radius: 12px;
+        border: 2px solid #e2e8f0;
+        padding: 12px;
+    }
+    
+    /* Expanders */
+    .streamlit-expanderHeader {
+        background: white;
+        border-radius: 12px;
+        border: 2px solid #e2e8f0;
+        font-weight: 600;
+    }
+    
+    /* Success messages */
+    .stSuccess {
+        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
+        color: #1a202c;
+        border-radius: 12px;
+    }
+    
+    /* Divider styling */
+    hr {
+        margin: 2rem 0;
+        border: none;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+    }
+    
+    /* Card container */
+    .card-container {
+        background: white;
+        padding: 2rem;
+        border-radius: 20px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        margin: 1rem 0;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg, .css-12oz5g7 {
+        background: rgba(255, 255, 255, 0.95) !important;
+        backdrop-filter: blur(10px);
+    }
+    
+    /* Emoji in cards */
+    .card-emoji {
+        font-size: 2rem;
+        margin-bottom: 8px;
+    }
+    
+    /* Card text */
+    .card-text {
+        font-size: 0.85rem;
+        line-height: 1.2;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# -------------------------
 # Logging
 # -------------------------
 logging.basicConfig(level=logging.INFO)
@@ -28,9 +156,75 @@ logger = logging.getLogger("travel_ragbot")
 # -------------------------
 # Streamlit page config
 # -------------------------
-st.set_page_config(page_title="Travel Assistant RAGBot", page_icon="🌍", layout="centered")
-st.title("🌍 Travel Assistant (RAG + Web Search + Weather + Flights + Hotels + Translation)")
-st.write("Your AI-powered travel companion — Gemini + LangChain + Amadeus + OpenWeather + Translation")
+st.set_page_config(
+    page_title="Travel Assistant RAGBot", 
+    page_icon="🌍", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+load_custom_css()
+
+# -------------------------
+# Header with Modern UI
+# -------------------------
+st.title("🌍 Travel Assistant RAGBot")
+st.markdown('<p class="subtitle">Your AI-powered travel companion — Gemini + LangChain + Amadeus + OpenWeather + Translation</p>', unsafe_allow_html=True)
+
+# -------------------------
+# Feature Cards (8 columns - 2 rows)
+# -------------------------
+st.markdown("### 🎯 How can I assist you today?")
+
+# First row of cards
+row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
+
+with row1_col1:
+    if st.button("📄\n\nDocument\nSearch", key="doc_search"):
+        st.session_state.selected_option = "Document Search"
+        
+with row1_col2:
+    if st.button("🌐\n\nTravel\nSearch", key="travel_search"):
+        st.session_state.selected_option = "Travel Search"
+        
+with row1_col3:
+    if st.button("✈️\n\nFlight\nSearch", key="flight_search"):
+        st.session_state.selected_option = "Flight Search"
+        
+with row1_col4:
+    if st.button("🏨\n\nHotel\nBooking", key="hotel_booking"):
+        st.session_state.selected_option = "Hotel Booking"
+
+# Second row of cards
+row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+
+with row2_col1:
+    if st.button("🗓️\n\nItinerary\nGenerator", key="itinerary_gen"):
+        st.session_state.selected_option = "Itinerary Generator"
+
+with row2_col2:
+    if st.button("🗣️\n\nLanguage\nTranslator", key="translator"):
+        st.session_state.selected_option = "Language Translator"
+
+with row2_col3:
+    if st.button("💾\n\nSaved\nData", key="saved_data"):
+        st.session_state.selected_option = "Saved Data"
+
+with row2_col4:
+    if st.button("🔐\n\nAPI\nManagement", key="api_management"):
+        st.session_state.selected_option = "API Management"
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# Initialize session state
+if "selected_option" not in st.session_state:
+    st.session_state.selected_option = "Travel Search"
+
+# Show selected option
+st.info(f"**Current Mode:** {st.session_state.selected_option}")
+st.markdown("---")
+
+# Store the selected option for later use
+option = st.session_state.selected_option
 
 # -------------------------
 # API Key Manager Class
@@ -1204,35 +1398,25 @@ def get_mock_hotel_data(city_name: str = "Sample City"):
     }
 
 # -------------------------
-# Streamlit Navigation
+# Main Content Based on Selected Option
 # -------------------------
-st.sidebar.title("🌍 Navigation")
-page = st.sidebar.radio("Go to", [
-    "Travel Search", 
-    "Flight Search", 
-    "Hotel Booking",
-    "Itinerary Generator",
-    "Document Search",
-    "Language Translator",  # Changed from Image Recognition
-    "API Management",
-    "Saved Data"
-])
+st.markdown('<div class="card-container">', unsafe_allow_html=True)
 
 # -------------------------
-# PAGE: Travel Search
+# CASE 1: Travel Search
 # -------------------------
-if page == "Travel Search":
-    st.header("🔍 Travel Information Search")
+if option == "Travel Search":
+    st.subheader("🔍 Travel Information Search")
     
-    option = st.radio(
+    travel_option = st.radio(
         "Search type:",
         ("Web Search", "Weather Check", "Smart Assistant")
     )
     
-    if option == "Web Search":
+    if travel_option == "Web Search":
         user_query = st.text_input("Where would you like to go or what do you want to know?", "where should I visit in goa")
         
-        if st.button("Search"):
+        if st.button("Search", type="primary"):
             if not user_query.strip():
                 st.warning("Please enter a travel query.")
             else:
@@ -1272,9 +1456,9 @@ Make it engaging and practical for travelers:"""
                     logger.exception("Web search error: %s", e)
                     st.error(f"❌ Search error: {e}")
     
-    elif option == "Weather Check":
+    elif travel_option == "Weather Check":
         city = st.text_input("Enter city name:", "Goa")
-        if st.button("Get Weather"):
+        if st.button("Get Weather", type="primary"):
             if not city.strip():
                 st.warning("Please enter a city name.")
             else:
@@ -1290,10 +1474,10 @@ Make it engaging and practical for travelers:"""
                     logger.exception("Weather fetch failed: %s", e)
                     st.error(f"❌ Error fetching weather: {e}")
     
-    elif option == "Smart Assistant":
+    elif travel_option == "Smart Assistant":
         agent_query = st.text_input("Ask anything (e.g., 'Weather in Tokyo and top attractions')", 
                                    "Best places to visit in Goa and current weather")
-        if st.button("Run Assistant"):
+        if st.button("Run Assistant", type="primary"):
             if not agent_query.strip():
                 st.warning("Please enter a query.")
             else:
@@ -1353,132 +1537,10 @@ Please provide a well-structured answer:"""
                     st.error(f"Assistant error: {e}")
 
 # -------------------------
-# PAGE: Flight Search
+# CASE 2: Document Search
 # -------------------------
-elif page == "Flight Search":
-    st.header("✈️ Flight Search (One-Way Only)")
-    
-    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
-        st.warning("⚠️ Amadeus API credentials not configured or invalid.")
-    elif amadeus_client is None:
-        st.error("❌ Amadeus client initialization failed.")
-    else:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            origin = st.text_input("From (Airport Code)", "DEL", max_chars=3)
-            destination = st.text_input("To (Airport Code)", "GOI", max_chars=3)
-        
-        with col2:
-            departure_date = st.date_input("Departure Date", 
-                                          min_value=datetime.now().date(),
-                                          value=datetime.now() + timedelta(days=7))
-            adults = st.number_input("Number of Passengers", min_value=1, max_value=9, value=1)
-        
-        if st.button("Search Flights"):
-            if not origin or not destination:
-                st.warning("Please enter origin and destination airport codes.")
-            elif origin == destination:
-                st.error("Origin and destination cannot be the same.")
-            else:
-                with st.spinner(f"Searching flights from {origin} to {destination}..."):
-                    departure_str = departure_date.strftime("%Y-%m-%d")
-                    
-                    flights = amadeus_client.search_flights(
-                        origin=origin,
-                        destination=destination,
-                        departure_date=departure_str,
-                        adults=adults
-                    )
-                    
-                    if "error" in flights:
-                        st.error(f"❌ Flight search failed: {flights['error']}")
-                    elif not flights:
-                        st.info(f"No one-way flights found from {origin} to {destination} on {departure_date.strftime('%B %d, %Y')}")
-                    else:
-                        st.success(f"✅ Found {len(flights)} one-way flights")
-                        
-                        flights.sort(key=lambda x: float(x['price']))
-                        
-                        st.subheader(f"Flights from {origin} to {destination}")
-                        
-                        for i, flight in enumerate(flights):
-                            with st.expander(f"Flight {i+1}: ₹{flight['price']} {flight['currency']}", expanded=(i==0)):
-                                st.write(f"**Price:** ₹{flight['price']} {flight['currency']}")
-                                st.write(f"**Type:** One-Way Flight")
-                                
-                                for j, itinerary in enumerate(flight['itineraries']):
-                                    total_duration = itinerary['duration']
-                                    st.write(f"**Duration:** {total_duration}")
-                                    
-                                    for segment in itinerary['segments']:
-                                        dep_time = datetime.fromisoformat(segment['departure']['time'].replace('Z', '+00:00'))
-                                        arr_time = datetime.fromisoformat(segment['arrival']['time'].replace('Z', '+00:00'))
-                                        
-                                        col_a, col_b, col_c = st.columns([2, 1, 2])
-                                        with col_a:
-                                            st.write(f"**Departure:**")
-                                            st.write(f"{segment['departure']['airport']}")
-                                            st.write(f"{dep_time.strftime('%H:%M')}")
-                                        with col_b:
-                                            st.write("→")
-                                        with col_c:
-                                            st.write(f"**Arrival:**")
-                                            st.write(f"{segment['arrival']['airport']}")
-                                            st.write(f"{arr_time.strftime('%H:%M')}")
-                                        
-                                        st.write(f"**Airline:** {segment['airline']} Flight {segment['flight_number']}")
-
-# -------------------------
-# PAGE: Itinerary Generator
-# -------------------------
-elif page == "Itinerary Generator":
-    st.header("🗓️ AI Itinerary Generator")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        destination = st.text_input("Destination", "Goa, India")
-        duration_days = st.number_input("Trip Duration (days)", min_value=1, max_value=30, value=5)
-    
-    with col2:
-        interests = st.multiselect(
-            "Your Interests",
-            ["Beaches", "History", "Food", "Adventure", "Culture", "Shopping", "Nature", "Nightlife"],
-            default=["Beaches", "Food"]
-        )
-        budget = st.selectbox("Budget", ["low", "medium", "high"])
-    
-    use_ai = st.checkbox("Use AI for detailed itinerary", value=True)
-    
-    if st.button("Generate Itinerary"):
-        if not destination:
-            st.warning("Please enter a destination.")
-        else:
-            with st.spinner("Creating your personalized itinerary..."):
-                if use_ai:
-                    itinerary = generate_itinerary(destination, duration_days, interests, budget)
-                else:
-                    itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
-                
-                st.success("✅ Itinerary generated successfully!")
-                    
-                st.markdown("### 📅 Your Travel Itinerary")
-                st.write(itinerary['itinerary_text'])
-                
-                itinerary_text = f"{duration_days}-Day {destination} Itinerary\n\n{itinerary['itinerary_text']}"
-                st.download_button(
-                    label="Download Itinerary",
-                    data=itinerary_text,
-                    file_name=f"{destination.replace(',', '').replace(' ', '_')}_{duration_days}day_itinerary.txt",
-                    mime="text/plain"
-                )
-
-# -------------------------
-# PAGE: Document Search
-# -------------------------
-elif page == "Document Search":
-    st.header("📄 Document-based Travel Assistant")
+elif option == "Document Search":
+    st.subheader("📄 Document-based Travel Assistant")
     
     uploaded_pdf = st.file_uploader("Upload your travel PDF", type=["pdf"])
     if uploaded_pdf:
@@ -1501,7 +1563,7 @@ elif page == "Document Search":
         chunks = split_text_with_meta(text)
         
         user_query = st.text_input("Enter your question here:", "where to visit in summer in india")
-        if st.button("Get Answer"):
+        if st.button("Get Answer", type="primary"):
             if not user_query.strip():
                 st.warning("Please type a question.")
             else:
@@ -1584,10 +1646,270 @@ Provide a detailed and helpful answer:"""
                     st.error(f"Error: {e}")
 
 # -------------------------
-# PAGE: Language Translator
+# CASE 3: Flight Search
 # -------------------------
-elif page == "Language Translator":
-    st.header("🌐 Language Translator")
+elif option == "Flight Search":
+    st.subheader("✈️ Flight Search (One-Way Only)")
+    
+    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
+        st.warning("⚠️ Amadeus API credentials not configured or invalid.")
+    elif amadeus_client is None:
+        st.error("❌ Amadeus client initialization failed.")
+    else:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            origin = st.text_input("From (Airport Code)", "DEL", max_chars=3)
+            destination = st.text_input("To (Airport Code)", "GOI", max_chars=3)
+        
+        with col2:
+            departure_date = st.date_input("Departure Date", 
+                                          min_value=datetime.now().date(),
+                                          value=datetime.now() + timedelta(days=7))
+            adults = st.number_input("Number of Passengers", min_value=1, max_value=9, value=1)
+        
+        if st.button("Search Flights", type="primary"):
+            if not origin or not destination:
+                st.warning("Please enter origin and destination airport codes.")
+            elif origin == destination:
+                st.error("Origin and destination cannot be the same.")
+            else:
+                with st.spinner(f"Searching flights from {origin} to {destination}..."):
+                    departure_str = departure_date.strftime("%Y-%m-%d")
+                    
+                    flights = amadeus_client.search_flights(
+                        origin=origin,
+                        destination=destination,
+                        departure_date=departure_str,
+                        adults=adults
+                    )
+                    
+                    if "error" in flights:
+                        st.error(f"❌ Flight search failed: {flights['error']}")
+                    elif not flights:
+                        st.info(f"No one-way flights found from {origin} to {destination} on {departure_date.strftime('%B %d, %Y')}")
+                    else:
+                        st.success(f"✅ Found {len(flights)} one-way flights")
+                        
+                        flights.sort(key=lambda x: float(x['price']))
+                        
+                        st.subheader(f"Flights from {origin} to {destination}")
+                        
+                        for i, flight in enumerate(flights):
+                            with st.expander(f"Flight {i+1}: ₹{flight['price']} {flight['currency']}", expanded=(i==0)):
+                                st.write(f"**Price:** ₹{flight['price']} {flight['currency']}")
+                                st.write(f"**Type:** One-Way Flight")
+                                
+                                for j, itinerary in enumerate(flight['itineraries']):
+                                    total_duration = itinerary['duration']
+                                    st.write(f"**Duration:** {total_duration}")
+                                    
+                                    for segment in itinerary['segments']:
+                                        dep_time = datetime.fromisoformat(segment['departure']['time'].replace('Z', '+00:00'))
+                                        arr_time = datetime.fromisoformat(segment['arrival']['time'].replace('Z', '+00:00'))
+                                        
+                                        col_a, col_b, col_c = st.columns([2, 1, 2])
+                                        with col_a:
+                                            st.write(f"**Departure:**")
+                                            st.write(f"{segment['departure']['airport']}")
+                                            st.write(f"{dep_time.strftime('%H:%M')}")
+                                        with col_b:
+                                            st.write("→")
+                                        with col_c:
+                                            st.write(f"**Arrival:**")
+                                            st.write(f"{segment['arrival']['airport']}")
+                                            st.write(f"{arr_time.strftime('%H:%M')}")
+                                        
+                                        st.write(f"**Airline:** {segment['airline']} Flight {segment['flight_number']}")
+
+# -------------------------
+# CASE 4: Hotel Booking
+# -------------------------
+elif option == "Hotel Booking":
+    st.subheader("🏨 Hotel Booking")
+    
+    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
+        st.warning("⚠️ Amadeus API not configured or invalid.")
+    else:
+        tab1, tab2 = st.tabs(["🔍 Search Hotels", "💾 Saved Hotels"])
+        
+        with tab1:
+            st.subheader("Search Hotels Worldwide")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                city = st.text_input(
+                    "City Name",
+                    placeholder="e.g., Paris, New York, Tokyo"
+                )
+                
+                check_in = st.date_input(
+                    "Check-in Date",
+                    value=datetime.now() + timedelta(days=7),
+                    min_value=datetime.now()
+                )
+            
+            with col2:
+                country = st.text_input(
+                    "Country (Optional)",
+                    placeholder="e.g., France, USA"
+                )
+                
+                check_out = st.date_input(
+                    "Check-out Date",
+                    value=datetime.now() + timedelta(days=14),
+                    min_value=check_in + timedelta(days=1)
+                )
+            
+            guests = st.number_input("Number of Guests", min_value=1, max_value=10, value=2)
+            
+            if st.button("🔍 Search Hotels", type="primary"):
+                if not city.strip():
+                    st.warning("Please enter a city name.")
+                else:
+                    with st.spinner(f"Searching hotels in {city}..."):
+                        try:
+                            city_code = get_city_code_amadeus(city)
+                            
+                            if not city_code:
+                                st.error(f"❌ Could not find city '{city}' in Amadeus database.")
+                            else:
+                                check_in_str = check_in.strftime("%Y-%m-%d")
+                                check_out_str = check_out.strftime("%Y-%m-%d")
+                                
+                                hotel_data = search_hotel_offers_amadeus(
+                                    city_code=city_code,
+                                    check_in=check_in_str,
+                                    check_out=check_out_str,
+                                    guests=guests
+                                )
+                                
+                                if "error" in hotel_data:
+                                    st.error(f"❌ Hotel search failed: {hotel_data['error']}")
+                                    st.warning("⚠️ Showing sample hotels for demonstration...")
+                                    hotel_data = get_mock_hotel_data(city)
+                                elif not hotel_data.get('data'):
+                                    st.warning(f"No hotels found in {city} for the selected dates.")
+                                    hotel_data = get_mock_hotel_data(city)
+                                
+                                hotels = hotel_data['data']
+                                st.success(f"✅ Found {len(hotels)} hotels in {city}")
+                                
+                                save_hotel_search(city, check_in_str, check_out_str, guests, len(hotels))
+                                
+                                for i, hotel in enumerate(hotels[:10]):
+                                    hotel_info = hotel.get('hotel', {})
+                                    offers = hotel.get('offers', [])
+                                    
+                                    if offers:
+                                        offer = offers[0]
+                                        price_info = offer.get('price', {})
+                                        price = price_info.get('total', 'N/A')
+                                        currency = price_info.get('currency', 'USD')
+                                        
+                                        with st.expander(f"🏨 {hotel_info.get('name', 'Hotel')} - ${price} {currency}"):
+                                            col_left, col_right = st.columns([3, 1])
+                                            
+                                            with col_left:
+                                                st.write(f"**Hotel:** {hotel_info.get('name', 'N/A')}")
+                                                
+                                                if hotel_info.get('rating'):
+                                                    rating = hotel_info['rating']
+                                                    st.write(f"**Rating:** {rating}/5")
+                                                
+                                                if hotel_info.get('address'):
+                                                    address = hotel_info['address']
+                                                    lines = address.get('lines', [])
+                                                    if lines:
+                                                        st.write(f"**Address:** {lines[0]}")
+                                                    city_name = address.get('cityName', '')
+                                                    if city_name:
+                                                        st.write(f"**City:** {city_name}")
+                                            
+                                            with col_right:
+                                                st.write(f"**Price:** ${price} {currency}")
+                                                st.write(f"**For:** {guests} guests")
+                                            
+                                            if st.button("💾 Save", key=f"save_{i}"):
+                                                save_hotel_favorite(
+                                                    hotel_info.get('name', 'Hotel'),
+                                                    city,
+                                                    float(price) if price != 'N/A' else 0,
+                                                    currency
+                                                )
+                                                st.success("Hotel saved to favorites!")
+                        
+                        except Exception as e:
+                            st.error(f"❌ Hotel search error: {str(e)}")
+        
+        with tab2:
+            st.subheader("Saved Hotel Favorites")
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT hotel_name, city, price, currency, saved_at FROM hotel_favorites ORDER BY saved_at DESC")
+            favorites = cursor.fetchall()
+            conn.close()
+            
+            if not favorites:
+                st.info("No hotels saved yet.")
+            else:
+                for hotel_name, city, price, currency, saved_at in favorites:
+                    st.write(f"**🏨 {hotel_name}**")
+                    st.write(f"**City:** {city} | **Price:** {currency} {price}")
+                    st.write(f"**Saved:** {saved_at}")
+                    st.write("---")
+
+# -------------------------
+# CASE 5: Itinerary Generator
+# -------------------------
+elif option == "Itinerary Generator":
+    st.subheader("🗓️ AI Itinerary Generator")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        destination = st.text_input("Destination", "Goa, India")
+        duration_days = st.number_input("Trip Duration (days)", min_value=1, max_value=30, value=5)
+    
+    with col2:
+        interests = st.multiselect(
+            "Your Interests",
+            ["Beaches", "History", "Food", "Adventure", "Culture", "Shopping", "Nature", "Nightlife"],
+            default=["Beaches", "Food"]
+        )
+        budget = st.selectbox("Budget", ["low", "medium", "high"])
+    
+    use_ai = st.checkbox("Use AI for detailed itinerary", value=True)
+    
+    if st.button("Generate Itinerary", type="primary"):
+        if not destination:
+            st.warning("Please enter a destination.")
+        else:
+            with st.spinner("Creating your personalized itinerary..."):
+                if use_ai:
+                    itinerary = generate_itinerary(destination, duration_days, interests, budget)
+                else:
+                    itinerary = generate_basic_itinerary(destination, duration_days, interests, budget)
+                
+                st.success("✅ Itinerary generated successfully!")
+                    
+                st.markdown("### 📅 Your Travel Itinerary")
+                st.write(itinerary['itinerary_text'])
+                
+                itinerary_text = f"{duration_days}-Day {destination} Itinerary\n\n{itinerary['itinerary_text']}"
+                st.download_button(
+                    label="Download Itinerary",
+                    data=itinerary_text,
+                    file_name=f"{destination.replace(',', '').replace(' ', '_')}_{duration_days}day_itinerary.txt",
+                    mime="text/plain"
+                )
+
+# -------------------------
+# CASE 6: Language Translator
+# -------------------------
+elif option == "Language Translator":
+    st.subheader("🌐 Language Translator")
     st.info("Powered by Google Translate - Fast and Reliable")
     
     # Initialize session state for translator
@@ -1852,205 +2174,10 @@ Translated Text:
                 st.write("---")
 
 # -------------------------
-# PAGE: Hotel Booking
+# CASE 7: Saved Data
 # -------------------------
-elif page == "Hotel Booking":
-    st.header("🏨 Hotel Booking")
-    
-    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
-        st.warning("⚠️ Amadeus API not configured or invalid.")
-        st.stop()
-    
-    tab1, tab2 = st.tabs(["🔍 Search Hotels", "💾 Saved Hotels"])
-    
-    with tab1:
-        st.subheader("Search Hotels Worldwide")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            city = st.text_input(
-                "City Name",
-                placeholder="e.g., Paris, New York, Tokyo"
-            )
-            
-            check_in = st.date_input(
-                "Check-in Date",
-                value=datetime.now() + timedelta(days=7),
-                min_value=datetime.now()
-            )
-        
-        with col2:
-            country = st.text_input(
-                "Country (Optional)",
-                placeholder="e.g., France, USA"
-            )
-            
-            check_out = st.date_input(
-                "Check-out Date",
-                value=datetime.now() + timedelta(days=14),
-                min_value=check_in + timedelta(days=1)
-            )
-        
-        guests = st.number_input("Number of Guests", min_value=1, max_value=10, value=2)
-        
-        if st.button("🔍 Search Hotels", type="primary"):
-            if not city.strip():
-                st.warning("Please enter a city name.")
-            else:
-                with st.spinner(f"Searching hotels in {city}..."):
-                    try:
-                        city_code = get_city_code_amadeus(city)
-                        
-                        if not city_code:
-                            st.error(f"❌ Could not find city '{city}' in Amadeus database.")
-                        else:
-                            check_in_str = check_in.strftime("%Y-%m-%d")
-                            check_out_str = check_out.strftime("%Y-%m-%d")
-                            
-                            hotel_data = search_hotel_offers_amadeus(
-                                city_code=city_code,
-                                check_in=check_in_str,
-                                check_out=check_out_str,
-                                guests=guests
-                            )
-                            
-                            if "error" in hotel_data:
-                                st.error(f"❌ Hotel search failed: {hotel_data['error']}")
-                                st.warning("⚠️ Showing sample hotels for demonstration...")
-                                hotel_data = get_mock_hotel_data(city)
-                            elif not hotel_data.get('data'):
-                                st.warning(f"No hotels found in {city} for the selected dates.")
-                                hotel_data = get_mock_hotel_data(city)
-                            
-                            hotels = hotel_data['data']
-                            st.success(f"✅ Found {len(hotels)} hotels in {city}")
-                            
-                            save_hotel_search(city, check_in_str, check_out_str, guests, len(hotels))
-                            
-                            for i, hotel in enumerate(hotels[:10]):
-                                hotel_info = hotel.get('hotel', {})
-                                offers = hotel.get('offers', [])
-                                
-                                if offers:
-                                    offer = offers[0]
-                                    price_info = offer.get('price', {})
-                                    price = price_info.get('total', 'N/A')
-                                    currency = price_info.get('currency', 'USD')
-                                    
-                                    with st.expander(f"🏨 {hotel_info.get('name', 'Hotel')} - ${price} {currency}"):
-                                        col_left, col_right = st.columns([3, 1])
-                                        
-                                        with col_left:
-                                            st.write(f"**Hotel:** {hotel_info.get('name', 'N/A')}")
-                                            
-                                            if hotel_info.get('rating'):
-                                                rating = hotel_info['rating']
-                                                st.write(f"**Rating:** {rating}/5")
-                                            
-                                            if hotel_info.get('address'):
-                                                address = hotel_info['address']
-                                                lines = address.get('lines', [])
-                                                if lines:
-                                                    st.write(f"**Address:** {lines[0]}")
-                                                city_name = address.get('cityName', '')
-                                                if city_name:
-                                                    st.write(f"**City:** {city_name}")
-                                        
-                                        with col_right:
-                                            st.write(f"**Price:** ${price} {currency}")
-                                            st.write(f"**For:** {guests} guests")
-                                        
-                                        if st.button("💾 Save", key=f"save_{i}"):
-                                            save_hotel_favorite(
-                                                hotel_info.get('name', 'Hotel'),
-                                                city,
-                                                float(price) if price != 'N/A' else 0,
-                                                currency
-                                            )
-                                            st.success("Hotel saved to favorites!")
-                    
-                    except Exception as e:
-                        st.error(f"❌ Hotel search error: {str(e)}")
-    
-    with tab2:
-        st.subheader("Saved Hotel Favorites")
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT hotel_name, city, price, currency, saved_at FROM hotel_favorites ORDER BY saved_at DESC")
-        favorites = cursor.fetchall()
-        conn.close()
-        
-        if not favorites:
-            st.info("No hotels saved yet.")
-        else:
-            for hotel_name, city, price, currency, saved_at in favorites:
-                st.write(f"**🏨 {hotel_name}**")
-                st.write(f"**City:** {city} | **Price:** {currency} {price}")
-                st.write(f"**Saved:** {saved_at}")
-                st.write("---")
-
-# -------------------------
-# PAGE: API Management
-# -------------------------
-elif page == "API Management":
-    st.header("🔐 API Key Management")
-    
-    st.subheader("API Key Status")
-    
-    for key_name, validation in KEY_VALIDATION.items():
-        if validation['valid']:
-            st.success(f"**{key_name}**: {validation['message']}")
-        elif "Not configured" in validation['message']:
-            st.warning(f"**{key_name}**: {validation['message']}")
-        else:
-            st.error(f"**{key_name}**: {validation['message']}")
-    
-    st.subheader("API Usage Statistics")
-    
-    usage_stats = api_manager.get_usage_stats()
-    if usage_stats:
-        for key_name, stats in usage_stats.items():
-            if stats['count'] > 0:
-                st.write(f"**{key_name}**:")
-                st.write(f"  • Total calls: {stats['count']}")
-                st.write(f"  • Errors: {stats['errors']}")
-                if stats['last_used']:
-                    st.write(f"  • Last used: {stats['last_used'].strftime('%Y-%m-d %H:%M:%S')}")
-                st.write("---")
-    
-    st.subheader("Database API Usage (Last 7 Days)")
-    db_stats = get_api_usage_stats(7)
-    
-    if db_stats:
-        for api_name, total_calls, avg_response_time, error_count in db_stats:
-            st.write(f"**{api_name}**:")
-            st.write(f"  • Total calls: {total_calls}")
-            if avg_response_time:
-                st.write(f"  • Avg response time: {avg_response_time:.2f}s")
-            st.write(f"  • Error rate: {(error_count/total_calls*100):.1f}%" if total_calls > 0 else "  • Error rate: 0%")
-            st.write("---")
-    else:
-        st.info("No API usage data recorded yet.")
-    
-    if st.button("🔄 Run API Health Check"):
-        with st.spinner("Checking API health..."):
-            new_validation = api_manager.validate_keys()
-            
-            st.subheader("Health Check Results")
-            for key_name, validation in new_validation.items():
-                if validation['valid']:
-                    st.success(f"✅ **{key_name}**: {validation['message']}")
-                elif "Not configured" in validation['message']:
-                    st.warning(f"⚠️ **{key_name}**: {validation['message']}")
-                else:
-                    st.error(f"❌ **{key_name}**: {validation['message']}")
-
-# -------------------------
-# PAGE: Saved Data
-# -------------------------
-elif page == "Saved Data":
-    st.header("💾 Saved Data")
+elif option == "Saved Data":
+    st.subheader("💾 Saved Data & History")
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Recent Searches", 
@@ -2143,11 +2270,69 @@ elif page == "Saved Data":
                 st.write("---")
 
 # -------------------------
-# Sidebar Info
+# CASE 8: API Management
+# -------------------------
+elif option == "API Management":
+    st.subheader("🔐 API Key Management")
+    
+    st.subheader("API Key Status")
+    
+    for key_name, validation in KEY_VALIDATION.items():
+        if validation['valid']:
+            st.success(f"**{key_name}**: {validation['message']}")
+        elif "Not configured" in validation['message']:
+            st.warning(f"**{key_name}**: {validation['message']}")
+        else:
+            st.error(f"**{key_name}**: {validation['message']}")
+    
+    st.subheader("API Usage Statistics")
+    
+    usage_stats = api_manager.get_usage_stats()
+    if usage_stats:
+        for key_name, stats in usage_stats.items():
+            if stats['count'] > 0:
+                st.write(f"**{key_name}**:")
+                st.write(f"  • Total calls: {stats['count']}")
+                st.write(f"  • Errors: {stats['errors']}")
+                if stats['last_used']:
+                    st.write(f"  • Last used: {stats['last_used'].strftime('%Y-%m-%d %H:%M:%S')}")
+                st.write("---")
+    
+    st.subheader("Database API Usage (Last 7 Days)")
+    db_stats = get_api_usage_stats(7)
+    
+    if db_stats:
+        for api_name, total_calls, avg_response_time, error_count in db_stats:
+            st.write(f"**{api_name}**:")
+            st.write(f"  • Total calls: {total_calls}")
+            if avg_response_time:
+                st.write(f"  • Avg response time: {avg_response_time:.2f}s")
+            st.write(f"  • Error rate: {(error_count/total_calls*100):.1f}%" if total_calls > 0 else "  • Error rate: 0%")
+            st.write("---")
+    else:
+        st.info("No API usage data recorded yet.")
+    
+    if st.button("🔄 Run API Health Check", type="primary"):
+        with st.spinner("Checking API health..."):
+            new_validation = api_manager.validate_keys()
+            
+            st.subheader("Health Check Results")
+            for key_name, validation in new_validation.items():
+                if validation['valid']:
+                    st.success(f"✅ **{key_name}**: {validation['message']}")
+                elif "Not configured" in validation['message']:
+                    st.warning(f"⚠️ **{key_name}**: {validation['message']}")
+                else:
+                    st.error(f"❌ **{key_name}**: {validation['message']}")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# -------------------------
+# Sidebar with Additional Options
 # -------------------------
 with st.sidebar:
     st.markdown("---")
-    st.subheader("API Status")
+    st.subheader("🔐 API Status")
     
     for key_name, validation in KEY_VALIDATION.items():
         if key_name == 'GOOGLE_API_KEY':
@@ -2176,13 +2361,14 @@ with st.sidebar:
     
     st.info("""
     **Features:**
-    - 🔍 Web Search
-    - 🌤 Weather
+    - 📄 Document Search
+    - 🌐 Travel Search
     - ✈️ Flight Search
-    - 🏨 Hotel Search
-    - 🌐 Language Translator
-    - 📄 Document RAG
+    - 🏨 Hotel Booking
     - 🗓️ Itinerary Generator
+    - 🌐 Language Translator
+    - 💾 Saved Data
+    - 🔐 API Management
     """)
     
     st.markdown("---")
