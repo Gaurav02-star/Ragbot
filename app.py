@@ -1008,6 +1008,78 @@ weather_tool_wrapped = Tool(
     func=weather_tool,
     description="Return weather for a city. Input is a city name."
 )
+def test_gemini_api_key(api_key: str):
+    """Test a Gemini API key to see what models are available"""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        
+        # Get all models
+        models = genai.list_models()
+        
+        # Find vision-capable models
+        vision_models = []
+        for model in models:
+            try:
+                if hasattr(model, 'supported_generation_methods'):
+                    methods = model.supported_generation_methods
+                    if hasattr(methods, '__iter__') and 'generateContent' in methods:
+                        vision_models.append({
+                            'name': model.name,
+                            'description': model.description if hasattr(model, 'description') else '',
+                            'methods': list(methods) if hasattr(methods, '__iter__') else str(methods)
+                        })
+            except:
+                continue
+        
+        return {
+            'success': True,
+            'total_models': len(models),
+            'vision_models': vision_models,
+            'all_models': [model.name for model in models[:50]],  # First 50
+            'sample_models': [
+                {'name': model.name, 'description': getattr(model, 'description', '')}
+                for model in models[:10]
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+def check_vision_status():
+    """Check and display vision system status"""
+    if not vision_client:
+        return {"status": "not_configured", "message": "No API key configured"}
+    
+    status = vision_client.get_status()
+    
+    if status['vision_available']:
+        return {
+            "status": "ready",
+            "message": f"✅ Vision is ready using {status['model_name']}",
+            "details": status
+        }
+    elif status['model_initialized']:
+        return {
+            "status": "text_only",
+            "message": f"⚠️ Model {status['model_name']} loaded but vision may not be supported",
+            "details": status
+        }
+    elif status['initialization_error']:
+        return {
+            "status": "error",
+            "message": f"❌ Initialization error: {status['initialization_error'][:100]}",
+            "details": status
+        }
+    else:
+        return {
+            "status": "unavailable",
+            "message": "❌ Vision capabilities not available",
+            "details": status
+        }
 
 # -------------------------
 # Image Recognition
@@ -1018,174 +1090,388 @@ class VisionRecognition:
         self.model = None
         self.model_name = None
         self.vision_available = False
+        self.initialization_error = None
         
         if gemini_api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key)
                 
-                # First, check what models are available
-                available_models = genai.list_models()
-                available_model_names = [model.name for model in available_models]
+                logger.info("🔧 Initializing Gemini Vision...")
                 
-                logger.info(f"Available models: {available_model_names}")
+                # Get all available models
+                try:
+                    available_models = genai.list_models()
+                    available_model_names = [model.name for model in available_models]
+                    logger.info(f"📊 Found {len(available_model_names)} total models")
+                    
+                    # Log first few models for debugging
+                    logger.info("First 5 available models:")
+                    for i, model in enumerate(available_models[:5]):
+                        logger.info(f"  {i+1}. {model.name}")
+                        if hasattr(model, 'supported_generation_methods'):
+                            logger.info(f"     Methods: {model.supported_generation_methods}")
+                    
+                except Exception as list_error:
+                    error_msg = f"Failed to list models: {list_error}"
+                    logger.error(error_msg)
+                    self.initialization_error = error_msg
+                    return
                 
-                # Try vision-capable models first
-                vision_models = [
-                    "models/gemini-1.5-flash",
-                    "models/gemini-1.5-pro",
-                    "models/gemini-pro-vision",
-                    "gemini-1.5-flash",
-                    "gemini-1.5-pro",
-                    "gemini-pro-vision"
+                # Define models to try in order of preference
+                models_to_try = [
+                    "gemini-1.5-flash",      # Most reliable and fast
+                    "gemini-1.5-pro",        # More capable
+                    "gemini-1.0-pro-vision", # Older vision model
+                    "gemini-pro-vision",     # Standard vision model
+                    "gemini-pro",            # Try non-vision specific
+                    "gemini-2.0-flash",      # Experimental/newer
+                    "gemini-2.0-flash-exp",  # Experimental
                 ]
                 
-                for model_name in vision_models:
+                logger.info(f"🔄 Testing {len(models_to_try)} potential models...")
+                
+                for model_name in models_to_try:
                     try:
-                        # Check if model is in available models
-                        model_name_full = model_name if "models/" in model_name else f"models/{model_name}"
+                        # Try both with and without 'models/' prefix
+                        variations = [
+                            f"models/{model_name}",
+                            model_name
+                        ]
                         
-                        if model_name_full in available_model_names:
-                            logger.info(f"Trying to load model: {model_name_full}")
-                            self.model = genai.GenerativeModel(model_name_full)
-                            self.model_name = model_name_full
-                            
-                            # Simple test to verify vision capability
-                            test_image = Image.new('RGB', (100, 100), color='red')
-                            prompt = "What color is this?"
-                            response = self.model.generate_content([prompt, test_image])
-                            
-                            if response and response.text:
-                                self.vision_available = True
-                                logger.info(f"✅ Vision model loaded: {model_name_full}")
-                                break
+                        for model_variation in variations:
+                            if model_variation in available_model_names:
+                                logger.info(f"  Testing: {model_variation}")
+                                
+                                try:
+                                    # Create the model instance
+                                    self.model = genai.GenerativeModel(model_variation)
+                                    self.model_name = model_variation
+                                    
+                                    # First test with text-only to verify basic functionality
+                                    logger.info(f"    Basic text test...")
+                                    text_response = self.model.generate_content("Say 'Hello World'")
+                                    
+                                    if text_response and hasattr(text_response, 'text'):
+                                        logger.info(f"    ✅ Text test passed")
+                                        
+                                        # Now test vision capability with a simple image
+                                        try:
+                                            # Create a simple test image in memory
+                                            test_img = Image.new('RGB', (100, 100), color=(255, 0, 0))  # Red image
+                                            img_bytes = io.BytesIO()
+                                            test_img.save(img_bytes, format='PNG')
+                                            img_bytes.seek(0)
+                                            
+                                            # Try to analyze the image
+                                            vision_prompt = "What color is this image?"
+                                            vision_response = self.model.generate_content(
+                                                [vision_prompt, img_bytes.getvalue()]
+                                            )
+                                            
+                                            if vision_response and hasattr(vision_response, 'text'):
+                                                self.vision_available = True
+                                                logger.info(f"    ✅ Vision test passed!")
+                                                logger.info(f"🎉 Successfully loaded vision model: {model_variation}")
+                                                
+                                                # Test the specific prompt format we'll use
+                                                try:
+                                                    travel_prompt = "What is this place?"
+                                                    test_response = self.model.generate_content(
+                                                        [travel_prompt, img_bytes.getvalue()]
+                                                    )
+                                                    if test_response:
+                                                        logger.info(f"    ✅ Travel prompt test passed")
+                                                except Exception as prompt_test_error:
+                                                    logger.warning(f"    Travel prompt test warning: {prompt_test_error}")
+                                                
+                                                return  # Success! Exit the loop
+                                            
+                                        except Exception as vision_test_error:
+                                            logger.warning(f"    Vision test failed: {str(vision_test_error)[:100]}")
+                                            # This model doesn't support vision, try next one
+                                            self.model = None
+                                            self.model_name = None
+                                            continue
+                                    
+                                except Exception as model_error:
+                                    logger.warning(f"    Model initialization failed: {str(model_error)[:100]}")
+                                    self.model = None
+                                    self.model_name = None
+                                    continue
+                                
                     except Exception as e:
-                        logger.warning(f"Model {model_name} failed: {e}")
+                        logger.warning(f"  Error testing {model_name}: {str(e)[:100]}")
                         continue
-                        
+                
+                # If we get here, no vision model worked
                 if not self.vision_available:
-                    logger.warning("No vision-capable model found or initialized")
+                    warning_msg = "No vision-capable model found or initialized"
+                    logger.warning(warning_msg)
+                    
+                    # Try a fallback: use any working model (even if not vision)
+                    try:
+                        logger.info("🔄 Trying fallback to gemini-1.5-flash...")
+                        self.model = genai.GenerativeModel('gemini-1.5-flash')
+                        self.model_name = 'gemini-1.5-flash'
+                        
+                        # Quick test
+                        test_response = self.model.generate_content("Test")
+                        if test_response:
+                            logger.info("✅ Fallback model loaded (text-only)")
+                            self.initialization_error = "Model loaded but vision may not be supported"
+                    except Exception as fallback_error:
+                        error_msg = f"Fallback also failed: {fallback_error}"
+                        logger.error(error_msg)
+                        self.initialization_error = error_msg
                         
             except Exception as e:
-                logger.error(f"Failed to initialize Gemini: {e}")
+                error_msg = f"Failed to initialize Gemini Vision: {e}"
+                logger.error(error_msg)
+                self.initialization_error = error_msg
     
     def analyze_image(self, image_file):
-        """Analyze image using Gemini or basic analysis"""
+        """Analyze image using Gemini Vision or fallback to basic analysis"""
         try:
-            # Read image
+            # Ensure we have a file/bytes to work with
+            if image_file is None:
+                return {
+                    'description': "❌ No image provided",
+                    'source': 'error',
+                    'vision_available': False
+                }
+            
+            # Read image data
             if hasattr(image_file, 'read'):
                 content = image_file.read()
                 # Reset file pointer for potential reuse
                 image_file.seek(0)
-            else:
+            elif hasattr(image_file, 'getvalue'):
                 content = image_file.getvalue()
+            else:
+                # Assume it's already bytes
+                content = image_file
             
-            image = Image.open(io.BytesIO(content))
+            if not content:
+                return {
+                    'description': "❌ Empty image file",
+                    'source': 'error',
+                    'vision_available': False
+                }
             
-            # Convert RGBA to RGB if necessary
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')
-            
-            # Resize if image is too large
-            max_size = (1024, 1024)
-            if image.width > max_size[0] or image.height > max_size[1]:
-                image.thumbnail(max_size, Image.Resampling.LANCZOS)
+            # Open and process image
+            try:
+                image = Image.open(io.BytesIO(content))
+                
+                # Convert RGBA to RGB if necessary
+                if image.mode == 'RGBA':
+                    image = image.convert('RGB')
+                
+                # Resize if image is too large (to save tokens/bandwidth)
+                max_size = (1024, 1024)
+                if image.width > max_size[0] or image.height > max_size[1]:
+                    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+                
+            except Exception as img_error:
+                logger.error(f"Failed to process image: {img_error}")
+                return self._basic_image_analysis_from_file(content)
             
             if self.vision_available and self.model:
                 # Use Gemini Vision
-                prompt = """
-                Analyze this travel-related image and provide comprehensive travel information:
-                
-                1. **What is this place?** - Identify the landmark, city, or country
-                2. **Travel significance** - Why is it famous for travelers?
-                3. **Best time to visit** - Recommended seasons/months
-                4. **Things to do** - Activities and attractions nearby
-                5. **Travel tips** - Cultural notes, entry requirements, etc.
-                
-                Format the response with clear headings and bullet points where appropriate.
-                """
-                
                 try:
-                    response = self.model.generate_content([prompt, image])
+                    # Track API usage
                     api_manager.track_usage('GOOGLE_API_KEY', True)
+                    
+                    prompt = """
+                    Analyze this travel-related image and provide detailed travel information:
+                    
+                    1. **Identification**: What landmark/place is this? (City, Country)
+                    2. **Description**: What makes this place special or famous?
+                    3. **Travel Experience**: What can visitors expect to see/do?
+                    4. **Best Time to Visit**: Seasonal recommendations
+                    5. **Practical Tips**: Entry requirements, costs, travel tips
+                    6. **Nearby Attractions**: Other places to visit in the area
+                    
+                    Format your response with clear headings and bullet points.
+                    Be descriptive and helpful for travelers planning a visit.
+                    """
+                    
+                    # Convert image to bytes for Gemini
+                    img_bytes = io.BytesIO()
+                    image.save(img_bytes, format='PNG')
+                    
+                    # Generate analysis
+                    response = self.model.generate_content([prompt, img_bytes.getvalue()])
                     
                     if response and hasattr(response, 'text'):
                         return {
                             'description': response.text,
                             'source': 'gemini_vision',
                             'model_used': self.model_name,
-                            'vision_available': True
+                            'vision_available': True,
+                            'success': True
                         }
                     else:
-                        raise Exception("No response from Gemini Vision")
+                        raise Exception("No response text from model")
                         
-                except Exception as e:
-                    logger.error(f"Gemini Vision analysis failed: {e}")
+                except Exception as vision_error:
+                    logger.error(f"Gemini Vision analysis failed: {vision_error}")
+                    api_manager.track_usage('GOOGLE_API_KEY', False)
+                    
                     # Fall back to basic analysis
                     return self._basic_image_analysis(image)
+            
             else:
-                # Use basic analysis
+                # Vision not available, use basic analysis
                 return self._basic_image_analysis(image)
                 
         except Exception as e:
             logger.exception(f"Image analysis failed: {e}")
             api_manager.track_usage('GOOGLE_API_KEY', False)
+            
             return {
                 'description': f"❌ Error analyzing image: {str(e)[:200]}",
                 'source': 'error',
-                'vision_available': False
+                'vision_available': False,
+                'error': str(e)
             }
     
     def _basic_image_analysis(self, image):
         """Basic image analysis when vision API is not available"""
-        # Get image properties
-        image_format = image.format if image.format else "Unknown"
-        dimensions = f"{image.width} x {image.height} pixels"
-        color_mode = image.mode
-        
-        # Try to guess if it's travel-related based on properties
-        is_landscape = image.width > image.height * 1.2
-        
-        analysis = f"""
+        try:
+            image_format = image.format if hasattr(image, 'format') and image.format else "Unknown"
+            dimensions = f"{image.width} x {image.height} pixels"
+            color_mode = image.mode if hasattr(image, 'mode') else "Unknown"
+            
+            # Basic image properties analysis
+            is_landscape = image.width > image.height * 1.2
+            is_square = abs(image.width - image.height) < 10
+            aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
+            
+            # Estimate if it might be travel-related
+            might_be_travel = (
+                is_landscape or  # Landscape often means scenery
+                image.width > 800 or  # Large images often mean important subjects
+                color_mode == 'RGB'  # Color images more likely to be travel photos
+            )
+            
+            analysis = f"""
 ## 🖼️ Basic Image Analysis
 
 **Image Properties:**
-- Format: {image_format}
-- Dimensions: {dimensions}
-- Color Mode: {color_mode}
-- Aspect: {"Landscape" if is_landscape else "Portrait/Square"}
+- **Format:** {image_format}
+- **Dimensions:** {dimensions}
+- **Color Mode:** {color_mode}
+- **Aspect Ratio:** {aspect}
+- **Size:** Approximately {image.width * image.height / 1000000:.1f} megapixels
 
-**Status:** ⚠️ Gemini Vision API is currently unavailable
+**Status:** {'🔴 Gemini Vision API is currently unavailable'}
 
-### For better analysis:
-1. **Ensure your Google API key** supports Gemini Vision models
-2. **Clear, well-lit images** of landmarks work best
-3. **Try different angles** - front-facing views are easier to identify
-4. **Include context** - surrounding area helps with identification
+### 🔍 What can be analyzed:
+This appears to be {'a travel-related image' if might_be_travel else 'an image'}. 
+Without AI vision capabilities, I can only analyze basic properties.
 
-### Alternative identification methods:
-- **Google Image Search** (images.google.com)
-- **TripAdvisor's Visual Search**
-- **Landmark identification apps** (like Google Lens)
+### 🚀 To enable AI-powered travel analysis:
 
-**Note:** This system requires a working Gemini API key with vision capabilities enabled.
+1. **API Key Configuration:**
+   - Ensure your Google API key supports Gemini Vision models
+   - Check that "Generative Language API" is enabled in Google Cloud Console
+
+2. **Model Requirements:**
+   - You need access to models like `gemini-1.5-flash` or `gemini-pro-vision`
+   - Make sure billing is enabled for your Google Cloud project
+
+3. **Quick Fix:**
+   - Generate a new API key from [Google AI Studio](https://makersuite.google.com/)
+   - Add it to your `.streamlit/secrets.toml` file
+
+### 📋 Manual Identification Tips:
+1. **Google Images**: Drag & drop to [images.google.com]
+2. **Travel Forums**: Try TripAdvisor or Lonely Planet forums
+3. **Reverse Image Search**: Use tools like TinEye
+4. **Social Media**: Reddit's r/travel or r/whereisthis
+
+**Note:** To get detailed travel information about this image, Gemini Vision API access is required.
 """
-        
-        return {
-            'description': analysis,
-            'source': 'basic_analysis',
-            'model_used': 'none',
-            'vision_available': False,
-            'warning': 'Gemini Vision API not accessible'
-        }
+            
+            return {
+                'description': analysis,
+                'source': 'basic_analysis',
+                'model_used': 'none',
+                'vision_available': False,
+                'warning': 'Gemini Vision API not accessible'
+            }
+            
+        except Exception as e:
+            logger.error(f"Basic analysis failed: {e}")
+            return {
+                'description': "❌ Unable to analyze image properties",
+                'source': 'error',
+                'vision_available': False
+            }
     
-    def _basic_image_analysis_from_file(self, image_file):
+    def _basic_image_analysis_from_file(self, image_bytes):
         """Basic analysis when image loading fails"""
         return {
-            'description': "Unable to analyze image. Please ensure:\n1. Image is in valid format (JPG, PNG)\n2. File is not corrupted\n3. Try a different image",
+            'description': """
+## ❌ Image Processing Error
+
+Unable to process the uploaded image. Please check:
+
+### Common Issues:
+1. **File Format:** Ensure it's JPG, PNG, or WebP format
+2. **File Size:** Image may be too large or corrupted
+3. **Permissions:** Check file read permissions
+4. **Corruption:** Try a different image file
+
+### ✅ What to try:
+- Upload a different image file
+- Convert to JPG format if using PNG/WebP
+- Reduce image size (under 10MB recommended)
+- Check internet connection for API access
+
+**Supported formats:** JPG, PNG, WebP, BMP
+**Max size:** 20MB (recommended under 5MB)
+""",
             'source': 'error',
             'vision_available': False
         }
+    
+    def get_status(self):
+        """Get the current status of vision capabilities"""
+        return {
+            'vision_available': self.vision_available,
+            'model_name': self.model_name,
+            'model_initialized': self.model is not None,
+            'api_key_configured': bool(self.gemini_api_key),
+            'initialization_error': self.initialization_error
+        }
+    
+    def test_vision_capability(self):
+        """Test if vision is working with a simple test image"""
+        if not self.vision_available or not self.model:
+            return {"success": False, "error": "Vision not available"}
+        
+        try:
+            # Create a simple test image
+            test_img = Image.new('RGB', (100, 100), color=(0, 255, 0))  # Green image
+            img_bytes = io.BytesIO()
+            test_img.save(img_bytes, format='PNG')
+            
+            prompt = "What color is this square?"
+            response = self.model.generate_content([prompt, img_bytes.getvalue()])
+            
+            if response and hasattr(response, 'text'):
+                return {
+                    "success": True,
+                    "response": response.text[:100],
+                    "model": self.model_name
+                }
+            else:
+                return {"success": False, "error": "No response from model"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 # Initialize Vision client
 gemini_key = api_manager.get_key('GOOGLE_API_KEY')
 vision_client = VisionRecognition(gemini_key) if gemini_key else None
