@@ -1020,26 +1020,52 @@ class VisionRecognition:
         self.model_name = None
         self.vision_available = False
         self.initialization_error = None
-        self.text_only_mode = True  # Force text-only mode
+        self.text_only_mode = False  # Allow vision mode
         
         if gemini_api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key)
                 
-                logger.info("🔧 Initializing Gemini (Text-only mode)...")
+                logger.info("🔧 Initializing Gemini...")
                 
-                # Try to load a text model
-                text_models = [
-                    "gemini-2.0-flash",
+                # List of models to try (vision-capable first)
+                vision_models = [
                     "gemini-2.0-flash-exp",
-                    "gemini-flash-latest",
-                    "gemini-pro-latest",
-                    "gemini-pro",
+                    "gemini-2.0-flash",
                     "gemini-1.5-flash",
-                    "gemini-1.5-pro"
+                    "gemini-1.5-pro",
+                    "gemini-pro-vision",
                 ]
                 
+                text_models = [
+                    "gemini-pro-latest",
+                    "gemini-pro",
+                    "gemini-flash-latest",
+                ]
+                
+                # Try vision models first
+                for model_name in vision_models:
+                    try:
+                        variations = [model_name, f"models/{model_name}"]
+                        for model_variation in variations:
+                            try:
+                                self.model = genai.GenerativeModel(model_variation)
+                                self.model_name = model_variation
+                                
+                                # Test with a simple text prompt first
+                                test_response = self.model.generate_content("Say hello")
+                                if test_response and hasattr(test_response, 'text'):
+                                    logger.info(f"✅ Loaded vision-capable model: {model_variation}")
+                                    self.vision_available = True
+                                    return
+                            except Exception as e:
+                                continue
+                    except Exception as e:
+                        continue
+                
+                # If vision models fail, try text-only models
+                logger.info("⚠️ Vision models not available, trying text-only models...")
                 for model_name in text_models:
                     try:
                         variations = [model_name, f"models/{model_name}"]
@@ -1051,22 +1077,26 @@ class VisionRecognition:
                                 # Test with text
                                 test_response = self.model.generate_content("Say hello")
                                 if test_response and hasattr(test_response, 'text'):
-                                    logger.info(f"✅ Loaded text model: {model_variation}")
+                                    logger.info(f"✅ Loaded text-only model: {model_variation}")
+                                    self.vision_available = False
                                     return
                             except:
                                 continue
                     except:
                         continue
                 
-                logger.warning("No text model loaded")
+                logger.error("❌ No Gemini models could be loaded")
+                self.initialization_error = "No compatible Gemini models found"
                 
             except Exception as e:
                 error_msg = f"Failed to initialize Gemini: {e}"
                 logger.error(error_msg)
                 self.initialization_error = error_msg
+        else:
+            self.initialization_error = "No API key provided"
     
     def analyze_image(self, image_file):
-        """Analyze image using basic properties + text description from user"""
+        """Analyze image using Gemini Vision if available, otherwise fall back to manual input"""
         try:
             # Ensure we have a file
             if image_file is None:
@@ -1092,7 +1122,87 @@ class VisionRecognition:
                     'vision_available': False
                 }
             
-            # Open and process image
+            # Store image name for saving to database
+            image_name = image_file.name if hasattr(image_file, 'name') else 'uploaded_image'
+            
+            # Try Gemini Vision if available
+            if self.vision_available and self.model:
+                try:
+                    # Open image for processing
+                    image = Image.open(io.BytesIO(content))
+                    
+                    # Try Gemini Vision with detailed prompt
+                    vision_prompt = """Analyze this travel image and provide comprehensive travel information:
+
+1. **Landmark Identification:** What is this landmark/place called?
+2. **Location:** Where is it located (city, country)?
+3. **Description:** What can you see in the image?
+4. **Travel Information:**
+   - Best time to visit
+   - Things to do nearby
+   - Cultural significance
+   - Travel tips and practical information
+   - Estimated costs if possible
+   - Nearby attractions
+
+Provide a detailed, engaging response suitable for travelers."""
+                    
+                    logger.info(f"🔍 Analyzing image with Gemini Vision: {image_name}")
+                    response = self.model.generate_content([vision_prompt, image])
+                    
+                    if response and hasattr(response, 'text'):
+                        result_text = response.text
+                        
+                        # Extract landmark name from response (simple pattern matching)
+                        landmark_name = "Unknown Landmark"
+                        common_landmarks = [
+                            ("Taj Mahal", ["taj mahal", "taj"]),
+                            ("Eiffel Tower", ["eiffel", "eiffel tower"]),
+                            ("Statue of Liberty", ["statue of liberty", "liberty statue"]),
+                            ("Colosseum", ["colosseum", "coliseum"]),
+                            ("Great Wall of China", ["great wall", "great wall of china"]),
+                            ("Machu Picchu", ["machu picchu"]),
+                            ("Pyramids of Giza", ["pyramid", "giza"]),
+                            ("Sydney Opera House", ["sydney opera"]),
+                        ]
+                        
+                        result_lower = result_text.lower()
+                        for name, keywords in common_landmarks:
+                            if any(keyword in result_lower for keyword in keywords):
+                                landmark_name = name
+                                break
+                        
+                        # Save to database
+                        try:
+                            save_image_search(
+                                image_name=image_name,
+                                landmark_name=landmark_name,
+                                confidence=0.85,
+                                travel_info=result_text[:2000]
+                            )
+                            logger.info(f"✅ Saved image analysis for {image_name}")
+                        except Exception as save_error:
+                            logger.error(f"Failed to save image search: {save_error}")
+                        
+                        return {
+                            'description': result_text,
+                            'source': 'gemini_vision',
+                            'vision_available': True,
+                            'success': True,
+                            'landmark': landmark_name,
+                            'model_used': self.model_name
+                        }
+                    
+                except Exception as vision_error:
+                    error_msg = str(vision_error).lower()
+                    if "429" in error_msg or "quota" in error_msg:
+                        logger.warning(f"Vision API quota exceeded: {vision_error}")
+                        self.vision_available = False  # Disable vision for now
+                    else:
+                        logger.warning(f"Vision analysis failed: {vision_error}")
+                    # Fall through to manual input
+            
+            # Vision not available or failed - show image properties and request manual input
             try:
                 image = Image.open(io.BytesIO(content))
                 
@@ -1100,32 +1210,45 @@ class VisionRecognition:
                 image_format = image.format if image.format else "Unknown"
                 dimensions = f"{image.width} x {image.height} pixels"
                 color_mode = image.mode
+                file_size_kb = len(content) / 1024
                 
                 # Basic analysis
                 is_landscape = image.width > image.height * 1.2
                 is_square = abs(image.width - image.height) < 10
                 aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
                 
-                # Show image properties and ask for description
+                # Create analysis message
+                vision_status = "❌ **Gemini Vision is not available**"
+                if self.vision_available:
+                    vision_status = "⚠️ **Vision analysis failed**"
+                
                 analysis = f"""
-## 🖼️ Basic Image Analysis
+## 🖼️ Image Analysis
 
 **Image Properties:**
+- **Filename:** {image_name}
 - **Format:** {image_format}
 - **Dimensions:** {dimensions}
 - **Color Mode:** {color_mode}
 - **Aspect Ratio:** {aspect}
-- **Size:** Approximately {image.width * image.height / 1000000:.1f} megapixels
+- **File Size:** {file_size_kb:.1f} KB
+- **Megapixels:** {image.width * image.height / 1000000:.1f} MP
 
-### 🔍 Manual Image Description
-Since Gemini Vision is not available, please describe what you see in the image:
+**Vision Status:** {vision_status}
 
-1. **What landmark or place is this?**
-2. **What country/city is it located in?**
-3. **What can you see in the image?**
-4. **What makes it interesting for travelers?**
+### 📝 Manual Image Description Needed
+Please describe what you see in the image below. I'll use your description to provide travel information.
 
-**Note:** Once you describe the image, I can provide travel information about it!
+**Questions to help you describe:**
+1. **What landmark or place is this?** (e.g., Taj Mahal, Eiffel Tower, etc.)
+2. **Where is it located?** (City, Country)
+3. **What features can you see?** (Architecture, scenery, people, etc.)
+4. **What makes it special for travelers?**
+
+**Example Description:**
+"This is the Taj Mahal in Agra, India. I can see the white marble mausoleum with four minarets, beautiful gardens in front, and a reflecting pool. The sky is clear blue in the background."
+
+Once you describe the image, I'll generate comprehensive travel information for you!
 """
                 
                 # Store image properties in session state for later use
@@ -1133,11 +1256,13 @@ Since Gemini Vision is not available, please describe what you see in the image:
                     st.session_state['image_analysis'] = {}
                 
                 st.session_state['image_analysis']['current_image'] = {
+                    'filename': image_name,
                     'format': image_format,
                     'dimensions': dimensions,
                     'color_mode': color_mode,
                     'aspect': aspect,
-                    'image_name': image_file.name if hasattr(image_file, 'name') else 'uploaded_image'
+                    'size_kb': file_size_kb,
+                    'image_data': content[:1000]  # Store first 1000 bytes for reference
                 }
                 
                 return {
@@ -1145,10 +1270,12 @@ Since Gemini Vision is not available, please describe what you see in the image:
                     'source': 'manual_input_required',
                     'vision_available': False,
                     'image_properties': {
+                        'filename': image_name,
                         'format': image_format,
                         'dimensions': dimensions,
                         'color_mode': color_mode,
-                        'aspect': aspect
+                        'aspect': aspect,
+                        'size_kb': file_size_kb
                     }
                 }
                 
@@ -1174,35 +1301,91 @@ Since Gemini Vision is not available, please describe what you see in the image:
             }
         
         try:
+            # Build comprehensive prompt
             prompt = f"""
-Based on this image description, provide comprehensive travel information:
+As a travel expert, analyze this image description and provide comprehensive travel information:
 
-**Image Description:**
+**IMAGE DESCRIPTION FROM USER:**
 {image_description}
 
-**Image Properties:**
-- Format: {image_properties.get('format', 'Unknown') if image_properties else 'Unknown'}
+**IMAGE PROPERTIES:**
+- Filename: {image_properties.get('filename', 'Unknown') if image_properties else 'Unknown'}
 - Dimensions: {image_properties.get('dimensions', 'Unknown') if image_properties else 'Unknown'}
+- Format: {image_properties.get('format', 'Unknown') if image_properties else 'Unknown'}
 
-Please provide detailed travel information including:
-1. **Location Identification**: Likely city/country
-2. **Travel Significance**: Why it's famous
-3. **Best Time to Visit**: Seasons and weather
-4. **Things to Do**: Activities and attractions
-5. **Travel Tips**: Practical advice for visitors
-6. **Nearby Attractions**: Other places to see
+**PLEASE PROVIDE:**
 
-Be descriptive and helpful for travelers. If you're not sure, provide general travel tips for that type of destination.
+### 1. 🏛️ Landmark Identification
+- Name of the landmark/place
+- Location (City, Country)
+- Historical/Cultural significance
+
+### 2. 🌍 Best Time to Visit
+- Ideal seasons/months
+- Weather conditions
+- Peak vs. off-peak seasons
+
+### 3. 🎯 Things to Do & See
+- Main attractions
+- Activities available
+- Photo spots
+- Guided tours
+
+### 4. 💰 Practical Information
+- Estimated entry fees (if any)
+- Opening hours
+- Dress code requirements
+- Photography rules
+
+### 5. 🚗 Travel Tips
+- How to get there
+- Local transportation
+- Nearby accommodations
+- Safety tips
+
+### 6. 🍽️ Food & Dining
+- Local cuisine to try
+- Recommended restaurants nearby
+- Food safety tips
+
+### 7. 📍 Nearby Attractions
+- Other places to visit in the area
+- Day trip possibilities
+
+**Make the response engaging, practical, and tailored for travelers.** If you're not certain about something, mention it and provide general advice for that type of destination.
 """
             
+            logger.info(f"📝 Generating travel info from description: {image_description[:100]}...")
             response = self.model.generate_content(prompt)
             
             if response and hasattr(response, 'text'):
+                result_text = response.text
+                
+                # Save to database
+                try:
+                    filename = image_properties.get('filename', 'described_image') if image_properties else 'described_image'
+                    
+                    # Try to extract landmark name from description
+                    landmark_name = "Described Location"
+                    if "taj mahal" in image_description.lower() or "taj" in image_description.lower():
+                        landmark_name = "Taj Mahal"
+                    elif "eiffel" in image_description.lower():
+                        landmark_name = "Eiffel Tower"
+                    
+                    save_image_search(
+                        image_name=filename,
+                        landmark_name=landmark_name,
+                        confidence=0.7,
+                        travel_info=result_text[:2000]
+                    )
+                except Exception as save_error:
+                    logger.error(f"Failed to save image search: {save_error}")
+                
                 return {
-                    'description': response.text,
+                    'description': result_text,
                     'source': 'gemini_text',
                     'model_used': self.model_name,
-                    'vision_available': False,
+                    'vision_available': self.vision_available,
                     'success': True
                 }
             else:
@@ -1221,7 +1404,7 @@ Be descriptive and helpful for travelers. If you're not sure, provide general tr
             }
     
     def _basic_image_analysis(self, image):
-        """Basic image analysis"""
+        """Basic image analysis (fallback method)"""
         try:
             image_format = image.format if hasattr(image, 'format') and image.format else "Unknown"
             dimensions = f"{image.width} x {image.height} pixels"
@@ -1303,6 +1486,163 @@ Unable to process the uploaded image. Please check:
             'api_key_configured': bool(self.gemini_api_key),
             'initialization_error': self.initialization_error,
             'text_only_mode': self.text_only_mode
+        }
+    
+    def simulate_vision_for_testing(self, image_file_name: str):
+        """Simulate vision response for testing (when no API key or vision is not working)"""
+        # Map common image names to responses
+        test_responses = {
+            "taj_mahal": """
+## 🕌 Taj Mahal - Agra, India
+
+### ✨ Landmark Identification
+**The Taj Mahal** is an ivory-white marble mausoleum on the south bank of the Yamuna river in Agra, India. It was commissioned in 1632 by Mughal emperor Shah Jahan to house the tomb of his favorite wife, Mumtaz Mahal. It's one of the Seven Wonders of the World and a UNESCO World Heritage Site.
+
+### 🌍 Travel Information
+**📍 Location:** Agra, Uttar Pradesh, India
+
+**🕒 Best Time to Visit:**
+- **October to March:** Pleasant weather (10-25°C), ideal for sightseeing
+- **Avoid April-June:** Extremely hot (up to 45°C)
+- **July-September:** Monsoon season, lush greenery but humid
+
+**🎯 Things to Do:**
+1. **Sunrise Visit:** See the Taj turn pink in morning light (opens 30 mins before sunrise)
+2. **Full Moon Night Viewing:** Available 5 days each month (book in advance)
+3. **Explore Gardens:** Char Bagh (Mughal garden) with fountains
+4. **Visit Mosque:** On the west side of the complex
+5. **See Inscriptions:** Persian calligraphy on the main gateway
+
+**💰 Practical Information:**
+- **Entry Fee:** ₹50 for Indians, ₹1100 for foreigners (includes shoe covers & water)
+- **Opening Hours:** Sunrise to sunset (closed Fridays for prayers)
+- **Guided Tours:** ₹800-1500 for 2 hours (certified guides at gate)
+- **Photography:** Free (tripod requires ₹25 permit)
+- **Dress Code:** Modest clothing recommended
+
+**🚗 Travel Tips:**
+- **Arrive Early:** Beat the crowds (opens at 6 AM)
+- **Avoid Touts:** Official guides wear badges
+- **Carry:** Water, hat, sunglasses (no food inside)
+- **Security:** Bags scanned, prohibited items list available
+- **Parking:** Available at East & West gates
+
+**🍽️ Food & Dining Nearby:**
+- **Pinch of Spice:** Modern Indian (1 km)
+- **Joney's Place:** Local breakfast spot
+- **Dasaprakash:** South Indian vegetarian
+- **Street Food:** Try pani puri & chaat near gate
+
+**📍 Nearby Attractions:**
+- **Agra Fort** (2.5 km): Red sandstone fortress
+- **Mehtab Bagh** (Moonlight Garden): Best photo spot across river
+- **Itimad-ud-Daulah** (Baby Taj): Miniature version
+- **Fatehpur Sikri** (40 km): Mughal capital
+- **Sikandra** (10 km): Akbar's tomb
+
+**🏨 Accommodation:**
+- **Luxury:** Oberoi Amarvilas, ITC Mughal
+- **Mid-range:** Hotel Atulyaa Taj, Crystal Sarovar
+- **Budget:** Hotel Kamal, Zostel Agra
+
+**📞 Emergency Contacts:**
+- Police: 100
+- Ambulance: 102
+- Tourism Police: 1363
+- US Embassy Delhi: +91-11-2419-8000
+
+*Note: This is simulated data. For real-time information, check official sources.*
+""",
+            "eiffel_tower": """
+## 🗼 Eiffel Tower - Paris, France
+
+### ✨ Landmark Identification
+**The Eiffel Tower** is a wrought-iron lattice tower on the Champ de Mars in Paris, France. Constructed from 1887 to 1889 as the entrance to the 1889 World's Fair, it was initially criticized but has become a global cultural icon of France.
+
+**📍 Location:** Champ de Mars, 5 Avenue Anatole France, 75007 Paris, France
+
+**🕒 Best Time to Visit:**
+- **April-June & September-October:** Pleasant weather, fewer crowds
+- **July-August:** Peak season, very crowded but long daylight hours
+- **Winter:** Fewer tourists, magical with possible snow
+- **Evenings:** See the light show (every hour after sunset)
+
+**🎯 Things to Do:**
+1. **Summit Visit:** Reach the top for panoramic Paris views
+2. **Dine at 58 Tour Eiffel:** Restaurant on first floor
+3. **Champ de Mars Picnic:** On the lawns in front
+4. **Light Show:** Sparkling lights for 5 minutes every hour at night
+5. **Glass Floor:** Walk on first floor's transparent floor
+
+**💰 Practical Information:**
+- **Entry Fee:** €10-26 depending on access level (stairs vs. elevator)
+- **Opening Hours:** 9:30 AM - 10:45 PM (varies by season)
+- **Advance Booking:** Highly recommended online
+- **Security Check:** Allow 30 mins for queues and security
+
+**🚗 Travel Tips:**
+- **Metro:** Line 6 to Bir-Hakeim, Line 9 to Trocadéro
+- **Best Photo Spot:** Trocadéro Gardens across the river
+- **Skip-the-Line:** Worth the extra cost during peak season
+- **Evening Visit:** Less crowded, beautiful lights
+- **Comfortable Shoes:** Lots of walking/standing
+
+*(Simulated data continues...)*
+"""
+        }
+        
+        # Find matching test response
+        image_lower = image_file_name.lower()
+        for key in test_responses:
+            if key in image_lower:
+                return {
+                    'description': test_responses[key],
+                    'source': 'simulated_vision',
+                    'vision_available': True,
+                    'success': True,
+                    'landmark': key.replace('_', ' ').title(),
+                    'model_used': 'simulated'
+                }
+        
+        # Default response
+        return {
+            'description': """
+## 🖼️ Image Analysis (Simulated)
+
+**Landmark:** Unidentified Travel Destination
+
+**Location:** Unknown
+
+**Travel Information:**
+This appears to be a beautiful travel destination! Based on the image, here are general travel tips:
+
+### 🌟 General Travel Advice:
+1. **Research the destination** before visiting
+2. **Check visa requirements** for the country
+3. **Learn basic local phrases**
+4. **Respect local customs and traditions**
+5. **Try local cuisine** for authentic experience
+
+### 🎒 Packing Tips:
+- Weather-appropriate clothing
+- Comfortable walking shoes
+- Universal power adapter
+- Local currency in small denominations
+- Copies of important documents
+
+### 🏨 Accommodation:
+- Book in advance for better rates
+- Read recent reviews
+- Consider location vs. price trade-off
+- Check cancellation policies
+
+**Note:** This is simulated information. For accurate details, please describe the image or upload a clearer photo.
+""",
+            'source': 'simulated_vision',
+            'vision_available': True,
+            'success': True,
+            'landmark': 'Unknown Destination',
+            'model_used': 'simulated'
         }
 
 # Initialize Vision client
