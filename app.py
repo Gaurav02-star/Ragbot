@@ -29,8 +29,8 @@ logger = logging.getLogger("travel_ragbot")
 # Streamlit page config
 # -------------------------
 st.set_page_config(page_title="Travel Assistant RAGBot", page_icon="🌍", layout="centered")
-st.title("🌍 Travel Assistant (RAG + Web Search + Weather + Flights + Hotels + Image Recognition)")
-st.write("Your AI-powered travel companion — Gemini + LangChain + Amadeus + OpenWeather")
+st.title("🌍 Travel Assistant (RAG + Web Search + Weather + Flights + Hotels + Translation)")
+st.write("Your AI-powered travel companion — Gemini + LangChain + Amadeus + OpenWeather + Translation")
 
 # -------------------------
 # API Key Manager Class
@@ -192,6 +192,126 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 DB_PATH = "travel_assistant.db"
 
+# Language options for translation
+LANGUAGE_OPTIONS = {
+    "English": "en",
+    "Spanish": "es", 
+    "French": "fr",
+    "German": "de",
+    "Italian": "it",
+    "Portuguese": "pt",
+    "Chinese": "zh-CN",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "Arabic": "ar",
+    "Russian": "ru",
+    "Hindi": "hi",
+    "Bengali": "bn",
+    "Urdu": "ur",
+    "Turkish": "tr",
+    "Dutch": "nl",
+    "Polish": "pl",
+    "Thai": "th",
+    "Vietnamese": "vi"
+}
+
+# -------------------------
+# Translation Functions
+# -------------------------
+def google_translate(text, target_lang, source_lang="auto"):
+    """Simple Google Translate that actually works"""
+    try:
+        if not text.strip():
+            return text
+        
+        # Use Google's translate API
+        url = "https://translate.googleapis.com/translate_a/single"
+        
+        params = {
+            "client": "gtx",
+            "sl": source_lang,
+            "tl": target_lang,
+            "dt": "t",
+            "q": text
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Extract the translated text
+            translated_text = ""
+            if data and len(data) > 0 and data[0]:
+                for item in data[0]:
+                    if item and len(item) > 0:
+                        translated_text += item[0]
+            
+            # If we got the same text back, try without auto-detect
+            if translated_text == text and source_lang == "auto":
+                # Try with English as source
+                params["sl"] = "en"
+                response = requests.get(url, params=params, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and len(data) > 0 and data[0]:
+                        for item in data[0]:
+                            if item and len(item) > 0:
+                                translated_text += item[0]
+            
+            return translated_text if translated_text else text
+        else:
+            # Alternative method
+            return translate_backup(text, target_lang, source_lang)
+            
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        return text
+
+def translate_backup(text, target_lang, source_lang="auto"):
+    """Backup translation method"""
+    try:
+        # Try a different endpoint
+        url = "https://clients5.google.com/translate_a/t"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        params = {
+            "client": "dict-chrome-ex",
+            "sl": source_lang,
+            "tl": target_lang,
+            "q": text
+        }
+        
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]
+        return text
+    except:
+        return text
+
+def translate_text(text, target_lang_code, source_lang_code="auto"):
+    """Enhanced translation with better error handling"""
+    if not text or not text.strip():
+        return text
+    
+    try:
+        # First try Google Translate
+        translated = google_translate(text, target_lang_code, source_lang_code)
+        
+        # If translation failed or same text, try backup
+        if translated == text:
+            translated = translate_backup(text, target_lang_code, source_lang_code)
+        
+        return translated
+    except Exception as e:
+        logger.error(f"Translation failed: {e}")
+        return text
+
 # -------------------------
 # Database Setup
 # -------------------------
@@ -244,12 +364,12 @@ def init_database():
     ''')
     
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS image_searches (
+        CREATE TABLE IF NOT EXISTS translations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            image_name TEXT NOT NULL,
-            landmark_name TEXT,
-            confidence REAL,
-            travel_info TEXT,
+            source_text TEXT NOT NULL,
+            source_lang TEXT NOT NULL,
+            target_lang TEXT NOT NULL,
+            translated_text TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -317,13 +437,13 @@ def save_flight_search(origin: str, destination: str, departure_date: str, resul
     conn.commit()
     conn.close()
 
-def save_image_search(image_name: str, landmark_name: str = None, confidence: float = 0, travel_info: str = ""):
-    """Save image search to database"""
+def save_translation(source_text: str, source_lang: str, target_lang: str, translated_text: str):
+    """Save translation to database"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO image_searches (image_name, landmark_name, confidence, travel_info) VALUES (?, ?, ?, ?)",
-        (image_name, landmark_name, confidence, travel_info[:2000])
+        "INSERT INTO translations (source_text, source_lang, target_lang, translated_text) VALUES (?, ?, ?, ?)",
+        (source_text[:500], source_lang, target_lang, translated_text[:1000])
     )
     conn.commit()
     conn.close()
@@ -374,12 +494,16 @@ def get_saved_itineraries():
     conn.close()
     return results
 
-def get_image_searches(limit: int = 10):
-    """Get recent image searches"""
+def get_translation_history(limit: int = 10):
+    """Get recent translations"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT image_name, landmark_name, confidence, created_at FROM image_searches ORDER BY created_at DESC LIMIT ?",
+        """
+        SELECT source_text, source_lang, target_lang, created_at 
+        FROM translations 
+        ORDER BY created_at DESC LIMIT ?
+        """,
         (limit,)
     )
     results = cursor.fetchall()
@@ -1009,646 +1133,6 @@ weather_tool_wrapped = Tool(
     description="Return weather for a city. Input is a city name."
 )
 
-
-# -------------------------
-# Image Recognition
-# -------------------------
-class VisionRecognition:
-    def __init__(self, gemini_api_key: str = None):
-        self.gemini_api_key = gemini_api_key
-        self.model = None
-        self.model_name = None
-        self.vision_available = False
-        self.initialization_error = None
-        self.text_only_mode = False  # Allow vision mode
-        
-        if gemini_api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_api_key)
-                
-                logger.info("🔧 Initializing Gemini...")
-                
-                # List of models to try (vision-capable first)
-                vision_models = [
-                    "gemini-2.0-flash-exp",
-                    "gemini-2.0-flash",
-                    "gemini-1.5-flash",
-                    "gemini-1.5-pro",
-                    "gemini-pro-vision",
-                ]
-                
-                text_models = [
-                    "gemini-pro-latest",
-                    "gemini-pro",
-                    "gemini-flash-latest",
-                ]
-                
-                # Try vision models first
-                for model_name in vision_models:
-                    try:
-                        variations = [model_name, f"models/{model_name}"]
-                        for model_variation in variations:
-                            try:
-                                self.model = genai.GenerativeModel(model_variation)
-                                self.model_name = model_variation
-                                
-                                # Test with a simple text prompt first
-                                test_response = self.model.generate_content("Say hello")
-                                if test_response and hasattr(test_response, 'text'):
-                                    logger.info(f"✅ Loaded vision-capable model: {model_variation}")
-                                    self.vision_available = True
-                                    return
-                            except Exception as e:
-                                continue
-                    except Exception as e:
-                        continue
-                
-                # If vision models fail, try text-only models
-                logger.info("⚠️ Vision models not available, trying text-only models...")
-                for model_name in text_models:
-                    try:
-                        variations = [model_name, f"models/{model_name}"]
-                        for model_variation in variations:
-                            try:
-                                self.model = genai.GenerativeModel(model_variation)
-                                self.model_name = model_variation
-                                
-                                # Test with text
-                                test_response = self.model.generate_content("Say hello")
-                                if test_response and hasattr(test_response, 'text'):
-                                    logger.info(f"✅ Loaded text-only model: {model_variation}")
-                                    self.vision_available = False
-                                    return
-                            except:
-                                continue
-                    except:
-                        continue
-                
-                logger.error("❌ No Gemini models could be loaded")
-                self.initialization_error = "No compatible Gemini models found"
-                
-            except Exception as e:
-                error_msg = f"Failed to initialize Gemini: {e}"
-                logger.error(error_msg)
-                self.initialization_error = error_msg
-        else:
-            self.initialization_error = "No API key provided"
-    
-    def analyze_image(self, image_file):
-        """Analyze image using Gemini Vision if available, otherwise fall back to manual input"""
-        try:
-            # Ensure we have a file
-            if image_file is None:
-                return {
-                    'description': "❌ No image provided",
-                    'source': 'error',
-                    'vision_available': False
-                }
-            
-            # Read image data
-            if hasattr(image_file, 'read'):
-                content = image_file.read()
-                image_file.seek(0)
-            elif hasattr(image_file, 'getvalue'):
-                content = image_file.getvalue()
-            else:
-                content = image_file
-            
-            if not content:
-                return {
-                    'description': "❌ Empty image file",
-                    'source': 'error',
-                    'vision_available': False
-                }
-            
-            # Store image name for saving to database
-            image_name = image_file.name if hasattr(image_file, 'name') else 'uploaded_image'
-            
-            # Try Gemini Vision if available
-            if self.vision_available and self.model:
-                try:
-                    # Open image for processing
-                    image = Image.open(io.BytesIO(content))
-                    
-                    # Try Gemini Vision with detailed prompt
-                    vision_prompt = """Analyze this travel image and provide comprehensive travel information:
-
-1. **Landmark Identification:** What is this landmark/place called?
-2. **Location:** Where is it located (city, country)?
-3. **Description:** What can you see in the image?
-4. **Travel Information:**
-   - Best time to visit
-   - Things to do nearby
-   - Cultural significance
-   - Travel tips and practical information
-   - Estimated costs if possible
-   - Nearby attractions
-
-Provide a detailed, engaging response suitable for travelers."""
-                    
-                    logger.info(f"🔍 Analyzing image with Gemini Vision: {image_name}")
-                    response = self.model.generate_content([vision_prompt, image])
-                    
-                    if response and hasattr(response, 'text'):
-                        result_text = response.text
-                        
-                        # Extract landmark name from response (simple pattern matching)
-                        landmark_name = "Unknown Landmark"
-                        common_landmarks = [
-                            ("Taj Mahal", ["taj mahal", "taj"]),
-                            ("Eiffel Tower", ["eiffel", "eiffel tower"]),
-                            ("Statue of Liberty", ["statue of liberty", "liberty statue"]),
-                            ("Colosseum", ["colosseum", "coliseum"]),
-                            ("Great Wall of China", ["great wall", "great wall of china"]),
-                            ("Machu Picchu", ["machu picchu"]),
-                            ("Pyramids of Giza", ["pyramid", "giza"]),
-                            ("Sydney Opera House", ["sydney opera"]),
-                        ]
-                        
-                        result_lower = result_text.lower()
-                        for name, keywords in common_landmarks:
-                            if any(keyword in result_lower for keyword in keywords):
-                                landmark_name = name
-                                break
-                        
-                        # Save to database
-                        try:
-                            save_image_search(
-                                image_name=image_name,
-                                landmark_name=landmark_name,
-                                confidence=0.85,
-                                travel_info=result_text[:2000]
-                            )
-                            logger.info(f"✅ Saved image analysis for {image_name}")
-                        except Exception as save_error:
-                            logger.error(f"Failed to save image search: {save_error}")
-                        
-                        return {
-                            'description': result_text,
-                            'source': 'gemini_vision',
-                            'vision_available': True,
-                            'success': True,
-                            'landmark': landmark_name,
-                            'model_used': self.model_name
-                        }
-                    
-                except Exception as vision_error:
-                    error_msg = str(vision_error).lower()
-                    if "429" in error_msg or "quota" in error_msg:
-                        logger.warning(f"Vision API quota exceeded: {vision_error}")
-                        self.vision_available = False  # Disable vision for now
-                    else:
-                        logger.warning(f"Vision analysis failed: {vision_error}")
-                    # Fall through to manual input
-            
-            # Vision not available or failed - show image properties and request manual input
-            try:
-                image = Image.open(io.BytesIO(content))
-                
-                # Get image properties
-                image_format = image.format if image.format else "Unknown"
-                dimensions = f"{image.width} x {image.height} pixels"
-                color_mode = image.mode
-                file_size_kb = len(content) / 1024
-                
-                # Basic analysis
-                is_landscape = image.width > image.height * 1.2
-                is_square = abs(image.width - image.height) < 10
-                aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
-                
-                # Create analysis message
-                vision_status = "❌ **Gemini Vision is not available**"
-                if self.vision_available:
-                    vision_status = "⚠️ **Vision analysis failed**"
-                
-                analysis = f"""
-## 🖼️ Image Analysis
-
-**Image Properties:**
-- **Filename:** {image_name}
-- **Format:** {image_format}
-- **Dimensions:** {dimensions}
-- **Color Mode:** {color_mode}
-- **Aspect Ratio:** {aspect}
-- **File Size:** {file_size_kb:.1f} KB
-- **Megapixels:** {image.width * image.height / 1000000:.1f} MP
-
-**Vision Status:** {vision_status}
-
-### 📝 Manual Image Description Needed
-Please describe what you see in the image below. I'll use your description to provide travel information.
-
-**Questions to help you describe:**
-1. **What landmark or place is this?** (e.g., Taj Mahal, Eiffel Tower, etc.)
-2. **Where is it located?** (City, Country)
-3. **What features can you see?** (Architecture, scenery, people, etc.)
-4. **What makes it special for travelers?**
-
-**Example Description:**
-"This is the Taj Mahal in Agra, India. I can see the white marble mausoleum with four minarets, beautiful gardens in front, and a reflecting pool. The sky is clear blue in the background."
-
-Once you describe the image, I'll generate comprehensive travel information for you!
-"""
-                
-                # Store image properties in session state for later use
-                if 'image_analysis' not in st.session_state:
-                    st.session_state['image_analysis'] = {}
-                
-                st.session_state['image_analysis']['current_image'] = {
-                    'filename': image_name,
-                    'format': image_format,
-                    'dimensions': dimensions,
-                    'color_mode': color_mode,
-                    'aspect': aspect,
-                    'size_kb': file_size_kb,
-                    'image_data': content[:1000]  # Store first 1000 bytes for reference
-                }
-                
-                return {
-                    'description': analysis,
-                    'source': 'manual_input_required',
-                    'vision_available': False,
-                    'image_properties': {
-                        'filename': image_name,
-                        'format': image_format,
-                        'dimensions': dimensions,
-                        'color_mode': color_mode,
-                        'aspect': aspect,
-                        'size_kb': file_size_kb
-                    }
-                }
-                
-            except Exception as img_error:
-                logger.error(f"Failed to process image: {img_error}")
-                return self._basic_image_analysis_from_file(content)
-                
-        except Exception as e:
-            logger.exception(f"Image analysis failed: {e}")
-            return {
-                'description': f"❌ Error: {str(e)[:200]}",
-                'source': 'error',
-                'vision_available': False
-            }
-    
-    def analyze_with_description(self, image_description: str, image_properties: dict = None):
-        """Generate travel info based on user description"""
-        if not self.model:
-            return {
-                'description': "❌ No AI model available",
-                'source': 'error',
-                'vision_available': False
-            }
-        
-        try:
-            # Build comprehensive prompt
-            prompt = f"""
-As a travel expert, analyze this image description and provide comprehensive travel information:
-
-**IMAGE DESCRIPTION FROM USER:**
-{image_description}
-
-**IMAGE PROPERTIES:**
-- Filename: {image_properties.get('filename', 'Unknown') if image_properties else 'Unknown'}
-- Dimensions: {image_properties.get('dimensions', 'Unknown') if image_properties else 'Unknown'}
-- Format: {image_properties.get('format', 'Unknown') if image_properties else 'Unknown'}
-
-**PLEASE PROVIDE:**
-
-### 1. 🏛️ Landmark Identification
-- Name of the landmark/place
-- Location (City, Country)
-- Historical/Cultural significance
-
-### 2. 🌍 Best Time to Visit
-- Ideal seasons/months
-- Weather conditions
-- Peak vs. off-peak seasons
-
-### 3. 🎯 Things to Do & See
-- Main attractions
-- Activities available
-- Photo spots
-- Guided tours
-
-### 4. 💰 Practical Information
-- Estimated entry fees (if any)
-- Opening hours
-- Dress code requirements
-- Photography rules
-
-### 5. 🚗 Travel Tips
-- How to get there
-- Local transportation
-- Nearby accommodations
-- Safety tips
-
-### 6. 🍽️ Food & Dining
-- Local cuisine to try
-- Recommended restaurants nearby
-- Food safety tips
-
-### 7. 📍 Nearby Attractions
-- Other places to visit in the area
-- Day trip possibilities
-
-**Make the response engaging, practical, and tailored for travelers.** If you're not certain about something, mention it and provide general advice for that type of destination.
-"""
-            
-            logger.info(f"📝 Generating travel info from description: {image_description[:100]}...")
-            response = self.model.generate_content(prompt)
-            
-            if response and hasattr(response, 'text'):
-                result_text = response.text
-                
-                # Save to database
-                try:
-                    filename = image_properties.get('filename', 'described_image') if image_properties else 'described_image'
-                    
-                    # Try to extract landmark name from description
-                    landmark_name = "Described Location"
-                    if "taj mahal" in image_description.lower() or "taj" in image_description.lower():
-                        landmark_name = "Taj Mahal"
-                    elif "eiffel" in image_description.lower():
-                        landmark_name = "Eiffel Tower"
-                    
-                    save_image_search(
-                        image_name=filename,
-                        landmark_name=landmark_name,
-                        confidence=0.7,
-                        travel_info=result_text[:2000]
-                    )
-                except Exception as save_error:
-                    logger.error(f"Failed to save image search: {save_error}")
-                
-                return {
-                    'description': result_text,
-                    'source': 'gemini_text',
-                    'model_used': self.model_name,
-                    'vision_available': self.vision_available,
-                    'success': True
-                }
-            else:
-                return {
-                    'description': "❌ No response from AI model",
-                    'source': 'error',
-                    'vision_available': False
-                }
-                
-        except Exception as e:
-            logger.error(f"Text analysis failed: {e}")
-            return {
-                'description': f"❌ AI analysis failed: {str(e)[:200]}",
-                'source': 'error',
-                'vision_available': False
-            }
-    
-    def _basic_image_analysis(self, image):
-        """Basic image analysis (fallback method)"""
-        try:
-            image_format = image.format if hasattr(image, 'format') and image.format else "Unknown"
-            dimensions = f"{image.width} x {image.height} pixels"
-            color_mode = image.mode if hasattr(image, 'mode') else "Unknown"
-            
-            is_landscape = image.width > image.height * 1.2
-            is_square = abs(image.width - image.height) < 10
-            aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
-            
-            analysis = f"""
-## 🖼️ Basic Image Analysis
-
-**Image Properties:**
-- **Format:** {image_format}
-- **Dimensions:** {dimensions}
-- **Color Mode:** {color_mode}
-- **Aspect Ratio:** {aspect}
-- **Size:** Approximately {image.width * image.height / 1000000:.1f} megapixels
-
-### 🔍 Gemini Vision Status
-⚠️ **Gemini Vision is not available with your current API key.**
-
-### 🚀 How to Enable Vision:
-1. Get a new API key from [Google AI Studio](https://makersuite.google.com/)
-2. Make sure billing is enabled in Google Cloud Console
-3. Enable "Generative Language API" and "Vertex AI API"
-
-### 💡 Alternative Solution:
-**Describe what you see in the image**, and I'll provide travel information based on your description!
-"""
-            
-            return {
-                'description': analysis,
-                'source': 'basic_analysis',
-                'model_used': 'none',
-                'vision_available': False,
-                'warning': 'Gemini Vision API not accessible'
-            }
-            
-        except Exception as e:
-            logger.error(f"Basic analysis failed: {e}")
-            return {
-                'description': "❌ Unable to analyze image properties",
-                'source': 'error',
-                'vision_available': False
-            }
-    
-    def _basic_image_analysis_from_file(self, image_bytes):
-        """Basic analysis when image loading fails"""
-        return {
-            'description': """
-## ❌ Image Processing Error
-
-Unable to process the uploaded image. Please check:
-
-### Common Issues:
-1. **File Format:** Ensure it's JPG, PNG, or WebP format
-2. **File Size:** Image may be too large or corrupted
-3. **Permissions:** Check file read permissions
-
-### ✅ What to try:
-- Upload a different image file
-- Convert to JPG format
-- Reduce image size (under 10MB recommended)
-
-**Supported formats:** JPG, PNG, WebP, BMP
-**Max size:** 20MB (recommended under 5MB)
-""",
-            'source': 'error',
-            'vision_available': False
-        }
-    
-    def get_status(self):
-        """Get the current status"""
-        return {
-            'vision_available': self.vision_available,
-            'model_name': self.model_name,
-            'model_initialized': self.model is not None,
-            'api_key_configured': bool(self.gemini_api_key),
-            'initialization_error': self.initialization_error,
-            'text_only_mode': self.text_only_mode
-        }
-    
-    def simulate_vision_for_testing(self, image_file_name: str):
-        """Simulate vision response for testing (when no API key or vision is not working)"""
-        # Map common image names to responses
-        test_responses = {
-            "taj_mahal": """
-## 🕌 Taj Mahal - Agra, India
-
-### ✨ Landmark Identification
-**The Taj Mahal** is an ivory-white marble mausoleum on the south bank of the Yamuna river in Agra, India. It was commissioned in 1632 by Mughal emperor Shah Jahan to house the tomb of his favorite wife, Mumtaz Mahal. It's one of the Seven Wonders of the World and a UNESCO World Heritage Site.
-
-### 🌍 Travel Information
-**📍 Location:** Agra, Uttar Pradesh, India
-
-**🕒 Best Time to Visit:**
-- **October to March:** Pleasant weather (10-25°C), ideal for sightseeing
-- **Avoid April-June:** Extremely hot (up to 45°C)
-- **July-September:** Monsoon season, lush greenery but humid
-
-**🎯 Things to Do:**
-1. **Sunrise Visit:** See the Taj turn pink in morning light (opens 30 mins before sunrise)
-2. **Full Moon Night Viewing:** Available 5 days each month (book in advance)
-3. **Explore Gardens:** Char Bagh (Mughal garden) with fountains
-4. **Visit Mosque:** On the west side of the complex
-5. **See Inscriptions:** Persian calligraphy on the main gateway
-
-**💰 Practical Information:**
-- **Entry Fee:** ₹50 for Indians, ₹1100 for foreigners (includes shoe covers & water)
-- **Opening Hours:** Sunrise to sunset (closed Fridays for prayers)
-- **Guided Tours:** ₹800-1500 for 2 hours (certified guides at gate)
-- **Photography:** Free (tripod requires ₹25 permit)
-- **Dress Code:** Modest clothing recommended
-
-**🚗 Travel Tips:**
-- **Arrive Early:** Beat the crowds (opens at 6 AM)
-- **Avoid Touts:** Official guides wear badges
-- **Carry:** Water, hat, sunglasses (no food inside)
-- **Security:** Bags scanned, prohibited items list available
-- **Parking:** Available at East & West gates
-
-**🍽️ Food & Dining Nearby:**
-- **Pinch of Spice:** Modern Indian (1 km)
-- **Joney's Place:** Local breakfast spot
-- **Dasaprakash:** South Indian vegetarian
-- **Street Food:** Try pani puri & chaat near gate
-
-**📍 Nearby Attractions:**
-- **Agra Fort** (2.5 km): Red sandstone fortress
-- **Mehtab Bagh** (Moonlight Garden): Best photo spot across river
-- **Itimad-ud-Daulah** (Baby Taj): Miniature version
-- **Fatehpur Sikri** (40 km): Mughal capital
-- **Sikandra** (10 km): Akbar's tomb
-
-**🏨 Accommodation:**
-- **Luxury:** Oberoi Amarvilas, ITC Mughal
-- **Mid-range:** Hotel Atulyaa Taj, Crystal Sarovar
-- **Budget:** Hotel Kamal, Zostel Agra
-
-**📞 Emergency Contacts:**
-- Police: 100
-- Ambulance: 102
-- Tourism Police: 1363
-- US Embassy Delhi: +91-11-2419-8000
-
-*Note: This is simulated data. For real-time information, check official sources.*
-""",
-            "eiffel_tower": """
-## 🗼 Eiffel Tower - Paris, France
-
-### ✨ Landmark Identification
-**The Eiffel Tower** is a wrought-iron lattice tower on the Champ de Mars in Paris, France. Constructed from 1887 to 1889 as the entrance to the 1889 World's Fair, it was initially criticized but has become a global cultural icon of France.
-
-**📍 Location:** Champ de Mars, 5 Avenue Anatole France, 75007 Paris, France
-
-**🕒 Best Time to Visit:**
-- **April-June & September-October:** Pleasant weather, fewer crowds
-- **July-August:** Peak season, very crowded but long daylight hours
-- **Winter:** Fewer tourists, magical with possible snow
-- **Evenings:** See the light show (every hour after sunset)
-
-**🎯 Things to Do:**
-1. **Summit Visit:** Reach the top for panoramic Paris views
-2. **Dine at 58 Tour Eiffel:** Restaurant on first floor
-3. **Champ de Mars Picnic:** On the lawns in front
-4. **Light Show:** Sparkling lights for 5 minutes every hour at night
-5. **Glass Floor:** Walk on first floor's transparent floor
-
-**💰 Practical Information:**
-- **Entry Fee:** €10-26 depending on access level (stairs vs. elevator)
-- **Opening Hours:** 9:30 AM - 10:45 PM (varies by season)
-- **Advance Booking:** Highly recommended online
-- **Security Check:** Allow 30 mins for queues and security
-
-**🚗 Travel Tips:**
-- **Metro:** Line 6 to Bir-Hakeim, Line 9 to Trocadéro
-- **Best Photo Spot:** Trocadéro Gardens across the river
-- **Skip-the-Line:** Worth the extra cost during peak season
-- **Evening Visit:** Less crowded, beautiful lights
-- **Comfortable Shoes:** Lots of walking/standing
-
-*(Simulated data continues...)*
-"""
-        }
-        
-        # Find matching test response
-        image_lower = image_file_name.lower()
-        for key in test_responses:
-            if key in image_lower:
-                return {
-                    'description': test_responses[key],
-                    'source': 'simulated_vision',
-                    'vision_available': True,
-                    'success': True,
-                    'landmark': key.replace('_', ' ').title(),
-                    'model_used': 'simulated'
-                }
-        
-        # Default response
-        return {
-            'description': """
-## 🖼️ Image Analysis (Simulated)
-
-**Landmark:** Unidentified Travel Destination
-
-**Location:** Unknown
-
-**Travel Information:**
-This appears to be a beautiful travel destination! Based on the image, here are general travel tips:
-
-### 🌟 General Travel Advice:
-1. **Research the destination** before visiting
-2. **Check visa requirements** for the country
-3. **Learn basic local phrases**
-4. **Respect local customs and traditions**
-5. **Try local cuisine** for authentic experience
-
-### 🎒 Packing Tips:
-- Weather-appropriate clothing
-- Comfortable walking shoes
-- Universal power adapter
-- Local currency in small denominations
-- Copies of important documents
-
-### 🏨 Accommodation:
-- Book in advance for better rates
-- Read recent reviews
-- Consider location vs. price trade-off
-- Check cancellation policies
-
-**Note:** This is simulated information. For accurate details, please describe the image or upload a clearer photo.
-""",
-            'source': 'simulated_vision',
-            'vision_available': True,
-            'success': True,
-            'landmark': 'Unknown Destination',
-            'model_used': 'simulated'
-        }
-
-# Initialize Vision client
-gemini_key = api_manager.get_key('GOOGLE_API_KEY')
-vision_client = VisionRecognition(gemini_key) if gemini_key else None
-
 # -------------------------
 # Mock Hotel Data for Fallback
 # -------------------------
@@ -1729,7 +1213,7 @@ page = st.sidebar.radio("Go to", [
     "Hotel Booking",
     "Itinerary Generator",
     "Document Search",
-    "Image Recognition",
+    "Language Translator",  # Changed from Image Recognition
     "API Management",
     "Saved Data"
 ])
@@ -2100,626 +1584,412 @@ Provide a detailed and helpful answer:"""
                     st.error(f"Error: {e}")
 
 # -------------------------
-# PAGE: Image Recognition - FIXED VERSION
+# PAGE: Language Translator
 # -------------------------
-elif page == "Image Recognition":
-    st.header("🖼️ Image Recognition for Travel")
+elif page == "Language Translator":
+    st.header("🌐 Language Translator")
+    st.info("Powered by Google Translate - Fast and Reliable")
     
-    # Initialize session state for image analysis
-    if 'image_analysis' not in st.session_state:
-        st.session_state['image_analysis'] = {}
+    # Initialize session state for translator
+    if 'trans_input' not in st.session_state:
+        st.session_state.trans_input = ""
+    if 'trans_result' not in st.session_state:
+        st.session_state.trans_result = ""
+    if 'src_lang' not in st.session_state:
+        st.session_state.src_lang = "English"
+    if 'tgt_lang' not in st.session_state:
+        st.session_state.tgt_lang = "Spanish"
+    if 'translation_history' not in st.session_state:
+        st.session_state.translation_history = []
     
-    # Initialize vision client if not already done
-    if vision_client is None:
-        gemini_key = api_manager.get_key('GOOGLE_API_KEY')
-        if gemini_key:
-            vision_client = VisionRecognition(gemini_key)
-        else:
-            vision_client = None
+    # Create two columns
+    col1, col2 = st.columns(2)
     
-    if not vision_client:
-        st.error("❌ Gemini API key not configured.")
-        st.info("Add GOOGLE_API_KEY to your `.streamlit/secrets.toml` file")
-        st.markdown("""
-        ### How to get a Gemini API key:
-        1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-        2. Create a new API key
-        3. Add it to your `.streamlit/secrets.toml` file:
-        ```
-        GOOGLE_API_KEY = "your-api-key-here"
-        ```
-        """)
-    else:
-        # Show status
-        status = vision_client.get_status()
-        
-        col1, col2, col3 = st.columns([2, 1, 1])
-        with col1:
-            if status.get('model_initialized'):
-                st.success(f"✅ Text AI Ready (using {status.get('model_name', 'Unknown')})")
-            else:
-                st.warning("⚠️ Limited functionality")
-        
-        with col2:
-            if st.button("🔄 Refresh", key="refresh_vision"):
-                st.rerun()
-        
-        with col3:
-            if st.button("ℹ️ Status", key="show_status"):
-                st.session_state['show_status'] = not st.session_state.get('show_status', False)
-        
-        # Show detailed status if requested
-        if st.session_state.get('show_status', False):
-            with st.expander("🔧 System Status", expanded=True):
-                st.write(f"**Model Name:** {status.get('model_name', 'None')}")
-                st.write(f"**Model Initialized:** {status.get('model_initialized', False)}")
-                st.write(f"**Vision Available:** {status.get('vision_available', False)}")
-                st.write(f"**Text Only Mode:** {status.get('text_only_mode', True)}")
-                if status.get('initialization_error'):
-                    st.write(f"**Error:** {status.get('initialization_error')}")
-        
-        st.info("📸 Upload an image and describe what you see to get travel information!")
-        
-        # Image upload
-        uploaded_image = st.file_uploader(
-            "Choose an image file", 
-            type=["jpg", "jpeg", "png", "webp"],
-            help="Upload an image of a travel destination (Max 20MB)"
+    with col1:
+        # Source language
+        src_lang = st.selectbox(
+            "Translate from:",
+            options=list(LANGUAGE_OPTIONS.keys()),
+            index=list(LANGUAGE_OPTIONS.keys()).index(st.session_state.src_lang),
+            key="src_select"
         )
+        st.session_state.src_lang = src_lang
         
-        if uploaded_image:
-            # Display image
-            st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
-            
-            # Show image info
-            with st.expander("📋 Image Details"):
-                try:
-                    image = Image.open(uploaded_image)
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**Format:** {image.format}")
-                        st.write(f"**Dimensions:** {image.width} × {image.height}")
-                    with col2:
-                        st.write(f"**Color Mode:** {image.mode}")
-                        st.write(f"**Size:** {uploaded_image.size / 1024:.1f} KB")
-                except:
-                    st.write("Unable to read image details")
-            
-            # Analyze button
-            if st.button("🔍 Analyze Image", type="primary", key="analyze_button"):
-                with st.spinner("Analyzing image..."):
-                    result = vision_client.analyze_image(uploaded_image)
-                    
-                    # Store result in session state
-                    st.session_state['image_analysis']['last_result'] = result
-                    st.session_state['image_analysis']['image_uploaded'] = True
-                    st.session_state['image_analysis']['current_image_name'] = uploaded_image.name
+        # Input text
+        input_text = st.text_area(
+            "Enter text to translate:",
+            value=st.session_state.trans_input,
+            height=200,
+            placeholder="Type or paste text here...",
+            key="input_box"
+        )
+        st.session_state.trans_input = input_text
         
-        # Show analysis results if available
-        if 'last_result' in st.session_state.get('image_analysis', {}):
-            result = st.session_state['image_analysis']['last_result']
-            
-            st.markdown("---")
-            st.subheader("📊 Basic Analysis")
-            st.markdown(result.get('description', 'No description available'))
-            
-            # Show manual input section if needed
-            if result.get('source') == 'manual_input_required':
-                st.markdown("---")
-                st.subheader("✍️ Describe What You See")
-                
-                # Text area for description
-                description = st.text_area(
-                    "Describe the image (e.g., 'This is the Eiffel Tower in Paris, France'):",
-                    height=150,
-                    placeholder="Describe the landmark, location, and what you see...",
-                    key="image_description"
-                )
-                
-                if description:
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        if st.button("🚀 Generate Travel Info", type="primary", key="generate_travel_info"):
-                            with st.spinner("Generating travel information..."):
-                                # Get image properties from session state
-                                image_props = st.session_state.get('image_analysis', {}).get('current_image', {})
-                                
-                                travel_info = vision_client.analyze_with_description(
-                                    description, 
-                                    image_props
-                                )
-                                
-                                # Store travel info in session state
-                                st.session_state['image_analysis']['travel_info'] = travel_info
-                                st.session_state['image_analysis']['description_provided'] = True
-                                st.rerun()
-                    
-                    with col2:
-                        if st.button("Clear Description", key="clear_description"):
-                            if 'image_description' in st.session_state:
-                                del st.session_state['image_description']
-                            if 'travel_info' in st.session_state.get('image_analysis', {}):
-                                del st.session_state['image_analysis']['travel_info']
-                            st.rerun()
-            
-            # Show travel information if generated
-            if 'travel_info' in st.session_state.get('image_analysis', {}):
-                travel_info = st.session_state['image_analysis']['travel_info']
-                
-                st.markdown("---")
-                st.subheader("🌍 Travel Information")
-                
-                if travel_info.get('success'):
-                    st.markdown(travel_info['description'])
-                    
-                    # Save to database
-                    try:
-                        image_name = st.session_state['image_analysis'].get('current_image_name', 'uploaded_image')
-                        save_image_search(
-                            image_name=image_name,
-                            landmark_name=None,
-                            confidence=0.5,
-                            travel_info=travel_info['description'][:2000]
-                        )
-                        st.toast("✅ Analysis saved to history!", icon="✅")
-                    except Exception as save_error:
-                        logger.error(f"Failed to save image search: {save_error}")
-                    
-                    # Download button
-                    travel_text = f"Travel Analysis for {image_name}\n\n{travel_info['description']}"
-                    st.download_button(
-                        label="📥 Download Analysis",
-                        data=travel_text,
-                        file_name=f"travel_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                        mime="text/plain"
-                    )
-                else:
-                    st.error(travel_info.get('description', "Failed to generate travel information"))
+        if input_text:
+            st.caption(f"Characters: {len(input_text)}")
+    
+    with col2:
+        # Target language (exclude source)
+        target_options = [lang for lang in LANGUAGE_OPTIONS.keys() if lang != st.session_state.src_lang]
+        if st.session_state.tgt_lang not in target_options:
+            st.session_state.tgt_lang = target_options[0] if target_options else "Spanish"
         
-        # History section
-        with st.expander("📚 Recent Image Analyses"):
-            recent_searches = get_image_searches(5)
-            
-            if not recent_searches:
-                st.info("No image analyses saved yet.")
+        tgt_lang = st.selectbox(
+            "Translate to:",
+            options=target_options,
+            index=target_options.index(st.session_state.tgt_lang),
+            key="tgt_select"
+        )
+        st.session_state.tgt_lang = tgt_lang
+        
+        # Output area
+        st.text_area(
+            "Translated text:",
+            value=st.session_state.trans_result,
+            height=200,
+            placeholder="Translation will appear here...",
+            key="output_box",
+            disabled=True
+        )
+    
+    # Buttons row
+    btn_col1, btn_col2, btn_col3 = st.columns([2, 1, 1])
+    
+    with btn_col1:
+        if st.button("🚀 Translate Now", type="primary", use_container_width=True):
+            if not st.session_state.trans_input.strip():
+                st.warning("Please enter some text to translate.")
             else:
-                for image_name, landmark_name, confidence, created_at in recent_searches:
-                    col_a, col_b = st.columns([3, 1])
-                    with col_a:
-                        st.write(f"**{image_name}**")
-                        if confidence:
-                            st.write(f"Confidence: {confidence:.0%}")
-                    with col_b:
-                        st.write(f"_{created_at}_")
-                    st.write("---")
-        
-        # Tips section
-        with st.expander("💡 How to Get Best Results"):
-            st.markdown("""
-            ### Current Method (Text-Only):
-            1. **Upload a clear image** of a landmark or travel destination
-            2. **Describe what you see** in detail
-            3. **Get AI-generated travel information** based on your description
+                with st.spinner("Translating..."):
+                    try:
+                        # Get language codes
+                        src_code = LANGUAGE_OPTIONS[st.session_state.src_lang]
+                        tgt_code = LANGUAGE_OPTIONS[st.session_state.tgt_lang]
+                        
+                        # Call the translation function
+                        translated = translate_text(
+                            st.session_state.trans_input,
+                            tgt_code,
+                            src_code
+                        )
+                        
+                        # Store result
+                        st.session_state.trans_result = translated
+                        
+                        # Save to database
+                        save_translation(
+                            st.session_state.trans_input,
+                            st.session_state.src_lang,
+                            st.session_state.tgt_lang,
+                            translated
+                        )
+                        
+                        # Add to session history
+                        st.session_state.translation_history.append({
+                            'source': st.session_state.trans_input,
+                            'target': translated,
+                            'src_lang': st.session_state.src_lang,
+                            'tgt_lang': st.session_state.tgt_lang,
+                            'timestamp': datetime.now()
+                        })
+                        
+                        # Show success
+                        st.success("✅ Translation successful!")
+                        
+                        # Display comparison
+                        st.markdown("---")
+                        st.subheader("📊 Translation Result")
+                        
+                        res_col1, res_col2 = st.columns(2)
+                        with res_col1:
+                            st.markdown(f"**{st.session_state.src_lang}:**")
+                            st.info(st.session_state.trans_input)
+                        with res_col2:
+                            st.markdown(f"**{st.session_state.tgt_lang}:**")
+                            st.success(st.session_state.trans_result)
+                        
+                        # Download button
+                        translation_text = f"""
+Translation Details
+==================
+
+Source Language: {st.session_state.src_lang}
+Target Language: {st.session_state.tgt_lang}
+Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Original Text:
+{st.session_state.trans_input}
+
+Translated Text:
+{st.session_state.trans_result}
+"""
+                        
+                        st.download_button(
+                            label="📥 Download Translation",
+                            data=translation_text,
+                            file_name=f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain"
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"Translation failed: {str(e)}")
+    
+    with btn_col2:
+        if st.button("🔄 Swap", use_container_width=True):
+            # Swap languages
+            old_src = st.session_state.src_lang
+            old_tgt = st.session_state.tgt_lang
             
-            ### Sample Descriptions:
-            - "This is the Taj Mahal in Agra, India - a white marble mausoleum with gardens"
-            - "I see the Eiffel Tower in Paris at night with lights"
-            - "Beautiful beach with palm trees and turquoise water, likely in Thailand"
-            - "Ancient ruins with stone columns, possibly Greek or Roman"
+            st.session_state.src_lang = old_tgt
+            st.session_state.tgt_lang = old_src
             
-            ### For Better Accuracy:
-            - Be specific about location (city, country)
-            - Mention architectural features
-            - Describe the surroundings
-            - Note any distinctive colors or styles
-            """)
+            # Swap text if translation exists
+            if st.session_state.trans_result:
+                st.session_state.trans_input = st.session_state.trans_result
+                st.session_state.trans_result = ""
+            
+            st.rerun()
+    
+    with btn_col3:
+        if st.button("🗑️ Clear", use_container_width=True):
+            st.session_state.trans_input = ""
+            st.session_state.trans_result = ""
+            st.rerun()
+    
+    # Quick phrases section
+    st.markdown("---")
+    st.subheader("🗣️ Common Travel Phrases")
+    
+    # Define common travel phrases in multiple languages
+    travel_phrases = {
+        "English": {
+            "Where is the airport?": "Where is the airport?",
+            "I need a taxi": "I need a taxi",
+            "How much does this cost?": "How much does this cost?",
+            "Where is the hotel?": "Where is the hotel?",
+            "Help me please": "Help me please",
+            "Thank you": "Thank you",
+            "Good morning": "Good morning",
+            "Where is the restroom?": "Where is the restroom?",
+            "I'm lost": "I'm lost",
+            "Can you help me?": "Can you help me?"
+        },
+        "Spanish": {
+            "Where is the airport?": "¿Dónde está el aeropuerto?",
+            "I need a taxi": "Necesito un taxi",
+            "How much does this cost?": "¿Cuánto cuesta esto?",
+            "Where is the hotel?": "¿Dónde está el hotel?",
+            "Help me please": "Ayúdame por favor",
+            "Thank you": "Gracias",
+            "Good morning": "Buenos días",
+            "Where is the restroom?": "¿Dónde está el baño?",
+            "I'm lost": "Estoy perdido",
+            "Can you help me?": "¿Puedes ayudarme?"
+        },
+        "French": {
+            "Where is the airport?": "Où est l'aéroport?",
+            "I need a taxi": "J'ai besoin d'un taxi",
+            "How much does this cost?": "Combien ça coûte?",
+            "Where is the hotel?": "Où est l'hôtel?",
+            "Help me please": "Aidez-moi s'il vous plaît",
+            "Thank you": "Merci",
+            "Good morning": "Bonjour",
+            "Where is the restroom?": "Où sont les toilettes?",
+            "I'm lost": "Je suis perdu",
+            "Can you help me?": "Pouvez-vous m'aider?"
+        },
+        "German": {
+            "Where is the airport?": "Wo ist der Flughafen?",
+            "I need a taxi": "Ich brauche ein Taxi",
+            "How much does this cost?": "Wie viel kostet das?",
+            "Where is the hotel?": "Wo ist das Hotel?",
+            "Help me please": "Hilfe bitte",
+            "Thank you": "Danke",
+            "Good morning": "Guten Morgen",
+            "Where is the restroom?": "Wo ist die Toilette?",
+            "I'm lost": "Ich habe mich verlaufen",
+            "Can you help me?": "Können Sie mir helfen?"
+        },
+        "Chinese": {
+            "Where is the airport?": "机场在哪里？",
+            "I need a taxi": "我需要出租车",
+            "How much does this cost?": "这个多少钱？",
+            "Where is the hotel?": "酒店在哪里？",
+            "Help me please": "请帮帮我",
+            "Thank you": "谢谢",
+            "Good morning": "早上好",
+            "Where is the restroom?": "洗手间在哪里？",
+            "I'm lost": "我迷路了",
+            "Can you help me?": "你能帮我吗？"
+        }
+    }
+    
+    # Show phrases for current source language
+    if st.session_state.src_lang in travel_phrases:
+        st.write(f"Quick phrases in **{st.session_state.src_lang}**:")
         
-        # Footer
-        st.markdown("---")
-        st.caption("ℹ️ Note: This system uses text-based AI since Gemini Vision is not available with your current API key.")
+        # Create 2 columns for phrases
+        col1, col2 = st.columns(2)
+        phrases = list(travel_phrases[st.session_state.src_lang].items())
+        
+        for i, (phrase_en, phrase_translated) in enumerate(phrases):
+            with col1 if i % 2 == 0 else col2:
+                if st.button(f"📝 {phrase_en}", key=f"phrase_{i}", use_container_width=True):
+                    st.session_state.trans_input = phrase_translated
+                    st.rerun()
+    
+    # Translation history
+    with st.expander("📚 Translation History", expanded=False):
+        recent_translations = get_translation_history(10)
+        
+        if not recent_translations:
+            st.info("No translations saved yet.")
+        else:
+            for source_text, source_lang, target_lang, created_at in recent_translations:
+                st.write(f"**{source_lang} → {target_lang}**")
+                st.write(f"**Original:** {source_text[:100]}...")
+                st.write(f"**Time:** {created_at}")
+                st.write("---")
 
 # -------------------------
 # PAGE: Hotel Booking
 # -------------------------
-# -------------------------
-# PAGE: Image Recognition - COMPLETELY FIXED VERSION
-# -------------------------
-elif page == "Image Recognition":
-    st.header("🖼️ Image Recognition for Travel")
+elif page == "Hotel Booking":
+    st.header("🏨 Hotel Booking")
     
-    # Initialize session state for image analysis
-    if 'image_analysis' not in st.session_state:
-        st.session_state['image_analysis'] = {
-            'current_image': None,
-            'last_result': None,
-            'travel_info': None,
-            'description_provided': False,
-            'show_status': False
-        }
-    
-    # Initialize vision client if not already done
-    gemini_key = api_manager.get_key('GOOGLE_API_KEY')
-    if not gemini_key:
-        st.error("❌ Gemini API key not configured.")
-        st.info("Add GOOGLE_API_KEY to your `.streamlit/secrets.toml` file")
-        st.markdown("""
-        ### How to get a Gemini API key:
-        1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-        2. Create a new API key
-        3. Add it to your `.streamlit/secrets.toml` file:
-        ```toml
-        GOOGLE_API_KEY = "your-api-key-here"
-        ```
-        """)
+    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
+        st.warning("⚠️ Amadeus API not configured or invalid.")
         st.stop()
     
-    if not hasattr(st.session_state, 'vision_client_initialized'):
-        with st.spinner("Initializing vision client..."):
-            try:
-                vision_client = VisionRecognition(gemini_key)
-                st.session_state.vision_client = vision_client
-                st.session_state.vision_client_initialized = True
-                logger.info(f"Vision client initialized: {vision_client.get_status()}")
-            except Exception as e:
-                st.error(f"❌ Failed to initialize vision client: {e}")
-                st.stop()
+    tab1, tab2 = st.tabs(["🔍 Search Hotels", "💾 Saved Hotels"])
     
-    vision_client = st.session_state.vision_client
-    status = vision_client.get_status()
-    
-    # Status display
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        if status.get('model_initialized'):
-            if status.get('vision_available'):
-                st.success(f"✅ Gemini Vision Ready ({status.get('model_name', 'Unknown')})")
-            else:
-                st.info(f"🤖 Gemini Text Ready ({status.get('model_name', 'Unknown')})")
-        else:
-            st.error("❌ AI Model Not Available")
-    
-    with col2:
-        if st.button("🔄 Refresh", key="refresh_vision"):
-            # Clear session state
-            for key in ['image_analysis', 'vision_client', 'vision_client_initialized']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
-    
-    with col3:
-        if st.button("ℹ️ Status", key="show_status"):
-            st.session_state['image_analysis']['show_status'] = not st.session_state['image_analysis'].get('show_status', False)
-    
-    # Show detailed status if requested
-    if st.session_state['image_analysis'].get('show_status', False):
-        with st.expander("🔧 System Status", expanded=True):
-            st.write(f"**Model Name:** {status.get('model_name', 'None')}")
-            st.write(f"**Model Initialized:** {status.get('model_initialized', False)}")
-            st.write(f"**Vision Available:** {status.get('vision_available', False)}")
-            st.write(f"**Text Only Mode:** {status.get('text_only_mode', False)}")
-            if status.get('initialization_error'):
-                st.write(f"**Error:** {status.get('initialization_error')}")
-    
-    # Main content
-    st.markdown("---")
-    
-    # Upload section
-    st.subheader("📸 Upload a Travel Image")
-    
-    uploaded_image = st.file_uploader(
-        "Choose an image file", 
-        type=["jpg", "jpeg", "png", "webp", "bmp"],
-        help="Upload an image of a landmark, destination, or travel scene (Max 20MB)"
-    )
-    
-    # Initialize image_data in session state
-    if uploaded_image and 'current_image_data' not in st.session_state.get('image_analysis', {}):
-        st.session_state['image_analysis']['current_image_data'] = uploaded_image.getvalue()
-    
-    # Display uploaded image
-    if uploaded_image:
-        try:
-            # Display the image
-            image = Image.open(uploaded_image)
-            st.image(image, caption=f"📷 {uploaded_image.name}", use_column_width=True)
-            
-            # Show image info
-            with st.expander("📋 Image Details", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**Filename:** {uploaded_image.name}")
-                    st.write(f"**Format:** {image.format}")
-                    st.write(f"**Size:** {uploaded_image.size / 1024:.1f} KB")
-                with col2:
-                    st.write(f"**Dimensions:** {image.width} × {image.height}")
-                    st.write(f"**Color Mode:** {image.mode}")
-                    st.write(f"**Megapixels:** {image.width * image.height / 1000000:.1f} MP")
-            
-            # Store image data for analysis
-            st.session_state['image_analysis']['current_image'] = {
-                'name': uploaded_image.name,
-                'data': uploaded_image.getvalue(),
-                'width': image.width,
-                'height': image.height,
-                'format': image.format,
-                'size_kb': uploaded_image.size / 1024
-            }
-            
-        except Exception as img_error:
-            st.error(f"❌ Failed to display image: {img_error}")
-            st.info("The image file might be corrupted. Try uploading a different image.")
-    
-    # Analysis section
-    st.markdown("---")
-    st.subheader("🔍 Analysis Options")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        analyze_button = st.button(
-            "🚀 Analyze with AI", 
-            type="primary", 
-            key="analyze_button",
-            disabled=not uploaded_image
-        )
-    
-    with col2:
-        if uploaded_image:
-            test_button = st.button(
-                "🧪 Test with Simulation", 
-                key="test_button",
-                help="Use simulated response for testing"
-            )
-        else:
-            test_button = False
-    
-    # Handle analysis
-    if analyze_button and uploaded_image:
-        with st.spinner("🔍 Analyzing image with AI..."):
-            try:
-                # Reset previous results
-                st.session_state['image_analysis']['last_result'] = None
-                st.session_state['image_analysis']['travel_info'] = None
-                st.session_state['image_analysis']['description_provided'] = False
-                
-                # Get image data
-                image_data = st.session_state['image_analysis']['current_image']['data']
-                
-                # Create a file-like object
-                image_file = io.BytesIO(image_data)
-                image_file.name = st.session_state['image_analysis']['current_image']['name']
-                
-                # Analyze image
-                result = vision_client.analyze_image(image_file)
-                
-                # Store result
-                st.session_state['image_analysis']['last_result'] = result
-                
-                # If vision was successful, we also have travel info
-                if result.get('success') and result.get('source') == 'gemini_vision':
-                    st.session_state['image_analysis']['travel_info'] = result
-                    st.session_state['image_analysis']['description_provided'] = True
-                
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Analysis failed: {str(e)}")
-                logger.exception("Image analysis error")
-    
-    # Handle test simulation
-    if test_button and uploaded_image:
-        with st.spinner("🧪 Running simulation..."):
-            try:
-                image_name = uploaded_image.name.lower()
-                result = vision_client.simulate_vision_for_testing(image_name)
-                
-                # Store result
-                st.session_state['image_analysis']['last_result'] = result
-                st.session_state['image_analysis']['travel_info'] = result
-                st.session_state['image_analysis']['description_provided'] = True
-                
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Simulation failed: {str(e)}")
-    
-    # Display results
-    st.markdown("---")
-    
-    # Show last result if available
-    if st.session_state['image_analysis'].get('last_result'):
-        result = st.session_state['image_analysis']['last_result']
+    with tab1:
+        st.subheader("Search Hotels Worldwide")
         
-        if result.get('source') == 'manual_input_required':
-            st.subheader("✍️ Describe What You See")
-            
-            # Show basic analysis
-            st.markdown(result.get('description', 'No description available'))
-            
-            # Description input
-            description = st.text_area(
-                "Describe the image in detail:",
-                height=150,
-                placeholder="Example: This is the Taj Mahal in Agra, India. I can see the white marble building with four minarets, beautiful gardens, and a reflecting pool...",
-                key="image_description_input"
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            city = st.text_input(
+                "City Name",
+                placeholder="e.g., Paris, New York, Tokyo"
             )
             
-            if description:
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    if st.button("🚀 Generate Travel Info", type="primary", key="generate_from_desc"):
-                        with st.spinner("Generating travel information..."):
-                            # Get image properties
-                            image_props = st.session_state['image_analysis'].get('current_image', {})
+            check_in = st.date_input(
+                "Check-in Date",
+                value=datetime.now() + timedelta(days=7),
+                min_value=datetime.now()
+            )
+        
+        with col2:
+            country = st.text_input(
+                "Country (Optional)",
+                placeholder="e.g., France, USA"
+            )
+            
+            check_out = st.date_input(
+                "Check-out Date",
+                value=datetime.now() + timedelta(days=14),
+                min_value=check_in + timedelta(days=1)
+            )
+        
+        guests = st.number_input("Number of Guests", min_value=1, max_value=10, value=2)
+        
+        if st.button("🔍 Search Hotels", type="primary"):
+            if not city.strip():
+                st.warning("Please enter a city name.")
+            else:
+                with st.spinner(f"Searching hotels in {city}..."):
+                    try:
+                        city_code = get_city_code_amadeus(city)
+                        
+                        if not city_code:
+                            st.error(f"❌ Could not find city '{city}' in Amadeus database.")
+                        else:
+                            check_in_str = check_in.strftime("%Y-%m-%d")
+                            check_out_str = check_out.strftime("%Y-%m-%d")
                             
-                            travel_info = vision_client.analyze_with_description(
-                                description, 
-                                image_props
+                            hotel_data = search_hotel_offers_amadeus(
+                                city_code=city_code,
+                                check_in=check_in_str,
+                                check_out=check_out_str,
+                                guests=guests
                             )
                             
-                            # Store travel info
-                            st.session_state['image_analysis']['travel_info'] = travel_info
-                            st.session_state['image_analysis']['description_provided'] = True
-                            st.rerun()
-                
-                with col2:
-                    if st.button("🗑️ Clear Description", key="clear_desc"):
-                        if 'image_description_input' in st.session_state:
-                            del st.session_state['image_description_input']
-                        st.rerun()
-        
-        elif result.get('source') == 'gemini_vision' or result.get('source') == 'simulated_vision':
-            st.subheader("🌍 Travel Analysis")
-            
-            # Show source badge
-            source_badge = {
-                'gemini_vision': "✅ AI Vision Analysis",
-                'simulated_vision': "🧪 Simulated Analysis",
-                'gemini_text': "🤖 Text Analysis"
-            }.get(result.get('source'), '🔍 Analysis')
-            
-            st.caption(f"**{source_badge}** | Model: {result.get('model_used', 'Unknown')}")
-            
-            # Show analysis
-            st.markdown(result.get('description', 'No analysis available'))
-            
-            # Save button
-            if st.button("💾 Save Analysis", key="save_analysis"):
-                try:
-                    image_name = st.session_state['image_analysis']['current_image']['name']
-                    landmark = result.get('landmark', 'Unknown')
+                            if "error" in hotel_data:
+                                st.error(f"❌ Hotel search failed: {hotel_data['error']}")
+                                st.warning("⚠️ Showing sample hotels for demonstration...")
+                                hotel_data = get_mock_hotel_data(city)
+                            elif not hotel_data.get('data'):
+                                st.warning(f"No hotels found in {city} for the selected dates.")
+                                hotel_data = get_mock_hotel_data(city)
+                            
+                            hotels = hotel_data['data']
+                            st.success(f"✅ Found {len(hotels)} hotels in {city}")
+                            
+                            save_hotel_search(city, check_in_str, check_out_str, guests, len(hotels))
+                            
+                            for i, hotel in enumerate(hotels[:10]):
+                                hotel_info = hotel.get('hotel', {})
+                                offers = hotel.get('offers', [])
+                                
+                                if offers:
+                                    offer = offers[0]
+                                    price_info = offer.get('price', {})
+                                    price = price_info.get('total', 'N/A')
+                                    currency = price_info.get('currency', 'USD')
+                                    
+                                    with st.expander(f"🏨 {hotel_info.get('name', 'Hotel')} - ${price} {currency}"):
+                                        col_left, col_right = st.columns([3, 1])
+                                        
+                                        with col_left:
+                                            st.write(f"**Hotel:** {hotel_info.get('name', 'N/A')}")
+                                            
+                                            if hotel_info.get('rating'):
+                                                rating = hotel_info['rating']
+                                                st.write(f"**Rating:** {rating}/5")
+                                            
+                                            if hotel_info.get('address'):
+                                                address = hotel_info['address']
+                                                lines = address.get('lines', [])
+                                                if lines:
+                                                    st.write(f"**Address:** {lines[0]}")
+                                                city_name = address.get('cityName', '')
+                                                if city_name:
+                                                    st.write(f"**City:** {city_name}")
+                                        
+                                        with col_right:
+                                            st.write(f"**Price:** ${price} {currency}")
+                                            st.write(f"**For:** {guests} guests")
+                                        
+                                        if st.button("💾 Save", key=f"save_{i}"):
+                                            save_hotel_favorite(
+                                                hotel_info.get('name', 'Hotel'),
+                                                city,
+                                                float(price) if price != 'N/A' else 0,
+                                                currency
+                                            )
+                                            st.success("Hotel saved to favorites!")
                     
-                    save_image_search(
-                        image_name=image_name,
-                        landmark_name=landmark,
-                        confidence=0.85,
-                        travel_info=result.get('description', '')[:2000]
-                    )
-                    st.success("✅ Analysis saved to history!")
-                except Exception as save_error:
-                    st.error(f"❌ Failed to save: {save_error}")
-            
-            # Download button
-            analysis_text = f"""
-Travel Image Analysis
-====================
-
-Image: {st.session_state['image_analysis']['current_image']['name']}
-Landmark: {result.get('landmark', 'Unknown')}
-Source: {result.get('source', 'Unknown')}
-Model: {result.get('model_used', 'Unknown')}
-Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-ANALYSIS:
-{result.get('description', 'No analysis available')}
-"""
-            
-            st.download_button(
-                label="📥 Download Analysis",
-                data=analysis_text,
-                file_name=f"travel_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain"
-            )
+                    except Exception as e:
+                        st.error(f"❌ Hotel search error: {str(e)}")
     
-    # Show travel info if generated from description
-    if st.session_state['image_analysis'].get('travel_info') and not st.session_state['image_analysis'].get('last_result'):
-        travel_info = st.session_state['image_analysis']['travel_info']
+    with tab2:
+        st.subheader("Saved Hotel Favorites")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT hotel_name, city, price, currency, saved_at FROM hotel_favorites ORDER BY saved_at DESC")
+        favorites = cursor.fetchall()
+        conn.close()
         
-        st.subheader("🌍 Generated Travel Information")
-        
-        if travel_info.get('success'):
-            st.markdown(travel_info['description'])
-            
-            # Download button
-            analysis_text = f"""
-Travel Information from Description
-==================================
-
-Image: {st.session_state['image_analysis']['current_image']['name']}
-Description Provided: Yes
-Model: {travel_info.get('model_used', 'Unknown')}
-Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-TRAVEL INFORMATION:
-{travel_info.get('description', 'No information available')}
-"""
-            
-            st.download_button(
-                label="📥 Download Travel Info",
-                data=analysis_text,
-                file_name=f"travel_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain"
-            )
+        if not favorites:
+            st.info("No hotels saved yet.")
         else:
-            st.error(travel_info.get('description', "Failed to generate travel information"))
-    
-    # History section
-    with st.expander("📚 Recent Image Analyses", expanded=False):
-        recent_searches = get_image_searches(5)
-        
-        if not recent_searches:
-            st.info("No image analyses saved yet.")
-        else:
-            for image_name, landmark_name, confidence, created_at in recent_searches:
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    st.write(f"**📷 {image_name}**")
-                    if landmark_name and landmark_name != 'None':
-                        st.write(f"📍 {landmark_name}")
-                    if confidence:
-                        st.write(f"🎯 Confidence: {confidence:.0%}")
-                with col_b:
-                    st.write(f"_{created_at}_")
+            for hotel_name, city, price, currency, saved_at in favorites:
+                st.write(f"**🏨 {hotel_name}**")
+                st.write(f"**City:** {city} | **Price:** {currency} {price}")
+                st.write(f"**Saved:** {saved_at}")
                 st.write("---")
-    
-    # Tips section
-    with st.expander("💡 Tips for Best Results", expanded=False):
-        st.markdown("""
-        ### For AI Vision Analysis:
-        1. **Use clear, well-lit images** of landmarks
-        2. **Avoid blurry or dark photos**
-        3. **Center the main subject** in the frame
-        4. **Include recognizable architectural features**
-        
-        ### For Manual Description:
-        1. **Be specific about the location** (city, country)
-        2. **Describe architectural features**
-        3. **Mention colors, materials, and surroundings**
-        4. **Note any distinctive elements**
-        
-        ### Common Landmarks that Work Well:
-        - Taj Mahal (India)
-        - Eiffel Tower (France)
-        - Statue of Liberty (USA)
-        - Colosseum (Italy)
-        - Great Wall of China
-        - Machu Picchu (Peru)
-        - Pyramids of Giza (Egypt)
-        
-        ### File Requirements:
-        - **Formats:** JPG, PNG, WebP, BMP
-        - **Max Size:** 20MB (recommended <5MB)
-        - **Resolution:** At least 500×500 pixels
-        """)
-    
-    # Troubleshooting
-    if not status.get('vision_available') and status.get('model_initialized'):
-        st.markdown("---")
-        st.warning("""
-        ⚠️ **Vision Not Available**
-        
-        Your Gemini API key doesn't have vision capabilities or you've exceeded quota.
-        
-        **Solutions:**
-        1. **Enable billing** in Google Cloud Console
-        2. **Upgrade your API key** to include vision features
-        3. **Use the manual description method** above
-        4. **Try the simulation** for testing
-        """)
-    
-    # Footer
-    st.markdown("---")
-    st.caption(f"🔧 System: {status.get('model_name', 'Not loaded')} | 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
 # -------------------------
 # PAGE: API Management
 # -------------------------
@@ -2746,7 +2016,7 @@ elif page == "API Management":
                 st.write(f"  • Total calls: {stats['count']}")
                 st.write(f"  • Errors: {stats['errors']}")
                 if stats['last_used']:
-                    st.write(f"  • Last used: {stats['last_used'].strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.write(f"  • Last used: {stats['last_used'].strftime('%Y-%m-d %H:%M:%S')}")
                 st.write("---")
     
     st.subheader("Database API Usage (Last 7 Days)")
@@ -2786,7 +2056,7 @@ elif page == "Saved Data":
         "Recent Searches", 
         "Saved Itineraries", 
         "Flight Searches", 
-        "Image Searches",
+        "Translation History",
         "Hotel Searches"
     ])
     
@@ -2846,20 +2116,15 @@ elif page == "Saved Data":
                 st.write("---")
     
     with tab4:
-        st.subheader("Image Search History")
-        image_searches = get_image_searches(10)
+        st.subheader("Translation History")
+        translations = get_translation_history(10)
         
-        if not image_searches:
-            st.info("No image searches saved yet.")
+        if not translations:
+            st.info("No translations saved yet.")
         else:
-            for image_name, landmark_name, confidence, created_at in image_searches:
-                st.write(f"**Image:** {image_name}")
-                if landmark_name:
-                    st.write(f"**Landmark:** {landmark_name}")
-                    if confidence:
-                        st.write(f"**Confidence:** {confidence:.1%}")
-                else:
-                    st.write("**Status:** No landmark identified")
+            for source_text, source_lang, target_lang, created_at in translations:
+                st.write(f"**{source_lang} → {target_lang}**")
+                st.write(f"**Original:** {source_text[:100]}...")
                 st.write(f"**Time:** {created_at}")
                 st.write("---")
     
@@ -2907,13 +2172,6 @@ with st.sidebar:
             else:
                 st.error("❌ Amadeus API")
     
-    if gemini_key and vision_client and vision_client.vision_available:
-        st.success("✅ Gemini Vision")
-    elif gemini_key and vision_client and vision_client.model is not None:
-        st.info("🤖 Gemini Text")
-    else:
-        st.info("🤖 No Gemini")
-    
     st.markdown("---")
     
     st.info("""
@@ -2922,10 +2180,10 @@ with st.sidebar:
     - 🌤 Weather
     - ✈️ Flight Search
     - 🏨 Hotel Search
-    - 🖼️ Image Recognition
+    - 🌐 Language Translator
     - 📄 Document RAG
     - 🗓️ Itinerary Generator
     """)
     
     st.markdown("---")
-    st.caption(f"v2.0.0 • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.caption(f"v2.1.0 • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
