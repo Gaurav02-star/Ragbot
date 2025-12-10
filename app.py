@@ -238,6 +238,49 @@ def set_cached_response(key: str, response: Any):
     """Cache a response for 5 minutes"""
     response_cache[key] = (time.time(), response)
 
+# Add these functions after your existing database functions (around line 250)
+
+def save_hotel_search(destination: str, check_in: str, check_out: str, guests: int, results_count: int = 0):
+    """Save hotel search to database"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO hotel_searches (destination, check_in, check_out, guests, results_count) VALUES (?, ?, ?, ?, ?)",
+        (destination, check_in, check_out, guests, results_count)
+    )
+    conn.commit()
+    conn.close()
+
+def get_hotel_searches(limit: int = 10):
+    """Get recent hotel searches"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT destination, check_in, check_out, guests, results_count, created_at 
+        FROM hotel_searches 
+        ORDER BY created_at DESC LIMIT ?
+        """,
+        (limit,)
+    )
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+def save_hotel_favorite(hotel_name: str, city: str, price: float, currency: str = "USD"):
+    """Save a hotel to favorites"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO hotel_favorites (hotel_name, city, price, currency, saved_at) 
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (hotel_name, city, price, currency)
+    )
+    conn.commit()
+    conn.close()
+
 # -------------------------
 # SQLite Database Setup
 # -------------------------
@@ -300,6 +343,29 @@ def init_database():
         )
     ''')
     
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hotel_searches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            destination TEXT NOT NULL,
+            check_in TEXT NOT NULL,
+            check_out TEXT NOT NULL,
+            guests INTEGER DEFAULT 2,
+            results_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hotel_favorites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hotel_name TEXT NOT NULL,
+            city TEXT NOT NULL,
+            price REAL,
+            currency TEXT DEFAULT 'USD',
+            notes TEXT,
+            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -412,6 +478,100 @@ def get_api_usage_stats(days: int = 7):
     conn.close()
     return results
 
+# Add after your other helper functions (around line 400)
+
+def get_amadeus_token():
+    """Get Amadeus API access token (reusable for hotels and flights)"""
+    try:
+        amadeus_client_id = api_manager.get_key('AMADEUS_CLIENT_ID')
+        amadeus_client_secret = api_manager.get_key('AMADEUS_CLIENT_SECRET')
+        
+        if not amadeus_client_id or not amadeus_client_secret:
+            return None
+        
+        url = "https://test.api.amadeus.com/v1/security/oauth2/token"
+        data = {
+            'grant_type': 'client_credentials',
+            'client_id': amadeus_client_id,
+            'client_secret': amadeus_client_secret
+        }
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        
+        response = secure_requests_post(url, data=data, headers=headers, api_name="Amadeus", timeout=10)
+        
+        if response.status_code == 200:
+            token_data = response.json()
+            return token_data['access_token']
+        else:
+            logger.error(f"Amadeus token failed: {response.status_code}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get Amadeus token: {e}")
+        return None
+
+def search_hotel_offers_amadeus(city_code: str, check_in: str, check_out: str, guests: int = 2):
+    """Search for hotel offers using Amadeus API"""
+    try:
+        token = get_amadeus_token()
+        if not token:
+            return {"error": "Failed to authenticate with Amadeus API"}
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Use Hotel Offers API
+        url = "https://test.api.amadeus.com/v3/shopping/hotel-offers"
+        params = {
+            "cityCode": city_code,
+            "checkInDate": check_in,
+            "checkOutDate": check_out,
+            "adults": guests,
+            "roomQuantity": 1,
+            "bestRateOnly": True,
+            "sort": "PRICE",
+            "radius": 20,
+            "radiusUnit": "KM"
+        }
+        
+        response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus_Hotels", timeout=15)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Hotel search failed: {response.status_code} - {response.text}")
+            return {"error": f"API error: {response.status_code}"}
+            
+    except Exception as e:
+        logger.error(f"Hotel search error: {e}")
+        return {"error": str(e)}
+
+def get_city_code_amadeus(city_name: str):
+    """Get IATA city code from Amadeus"""
+    try:
+        token = get_amadeus_token()
+        if not token:
+            return None
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        url = "https://test.api.amadeus.com/v1/reference-data/locations"
+        params = {
+            "keyword": city_name,
+            "subType": "CITY,AIRPORT",
+            "page[limit]": 5
+        }
+        
+        response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus", timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("data"):
+                # Return first city result
+                for location in data["data"]:
+                    if location.get("subType") == "CITY":
+                        return location["iataCode"]
+        return None
+    except Exception as e:
+        logger.error(f"City code search error: {e}")
+        return None
 # Initialize database
 init_database()
 
@@ -1322,6 +1482,7 @@ st.sidebar.title("🌍 Navigation")
 page = st.sidebar.radio("Go to", [
     "Travel Search", 
     "Flight Search", 
+    "Hotel Booking",
     "Itinerary Generator",
     "Document Search",
     "Image Recognition",
@@ -2001,13 +2162,357 @@ elif page == "API Management":
                 else:
                     st.error(f"❌ **{key_name}**: {validation['message']}")
 
+# ============================
+# PAGE: Hotel Booking
+# ============================
+elif page == "Hotel Booking":
+    st.header("🏨 Hotel Booking")
+    
+    # Check if Amadeus is configured
+    if not KEY_VALIDATION['AMADEUS_KEYS']['valid']:
+        st.warning("""
+        ⚠️ Amadeus API not configured or invalid.
+        
+        To use hotel booking:
+        1. Get Amadeus API keys from https://developers.amadeus.com
+        2. Add to Streamlit Secrets:
+           - AMADEUS_CLIENT_ID
+           - AMADEUS_CLIENT_SECRET
+        
+        Hotel booking uses the same Amadeus API as flight search.
+        """)
+        st.stop()
+    
+    # Create tabs for different hotel features
+    tab1, tab2, tab3 = st.tabs(["🔍 Search Hotels", "💾 Saved Hotels", "📊 Hotel Tips"])
+    
+    with tab1:
+        st.subheader("Search Hotels Worldwide")
+        
+        # Search form
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            city = st.text_input(
+                "City Name",
+                placeholder="e.g., Paris, New York, Tokyo",
+                help="Enter the city where you want to stay"
+            )
+            
+            check_in = st.date_input(
+                "Check-in Date",
+                value=datetime.now() + timedelta(days=7),
+                min_value=datetime.now(),
+                help="Select your arrival date"
+            )
+        
+        with col2:
+            country = st.text_input(
+                "Country (Optional)",
+                placeholder="e.g., France, USA",
+                help="Specify country for more accurate results"
+            )
+            
+            check_out = st.date_input(
+                "Check-out Date",
+                value=datetime.now() + timedelta(days=14),
+                min_value=check_in + timedelta(days=1),
+                help="Select your departure date"
+            )
+        
+        # Additional options
+        with st.expander("📋 Additional Options"):
+            col_a, col_b, col_c = st.columns(3)
+            
+            with col_a:
+                guests = st.number_input(
+                    "Number of Guests",
+                    min_value=1,
+                    max_value=10,
+                    value=2,
+                    help="Adults only"
+                )
+            
+            with col_b:
+                rooms = st.number_input(
+                    "Number of Rooms",
+                    min_value=1,
+                    max_value=5,
+                    value=1
+                )
+            
+            with col_c:
+                max_price = st.number_input(
+                    "Max Price (USD)",
+                    min_value=0,
+                    value=500,
+                    step=50,
+                    help="Maximum price per night"
+                )
+        
+        # Search button
+        if st.button("🔍 Search Hotels", type="primary", use_container_width=True):
+            if not city.strip():
+                st.warning("Please enter a city name.")
+            else:
+                with st.spinner(f"Searching hotels in {city}..."):
+                    try:
+                        # Get city code
+                        city_code = get_city_code_amadeus(city)
+                        
+                        if not city_code:
+                            st.error(f"❌ Could not find city '{city}' in Amadeus database.")
+                            st.info("Try being more specific (e.g., 'New York' instead of 'NYC')")
+                        else:
+                            # Format dates
+                            check_in_str = check_in.strftime("%Y-%m-%d")
+                            check_out_str = check_out.strftime("%Y-%m-%d")
+                            
+                            # Search for hotels
+                            st.info(f"📍 Searching hotels in {city} ({city_code})...")
+                            
+                            hotel_data = search_hotel_offers_amadeus(
+                                city_code=city_code,
+                                check_in=check_in_str,
+                                check_out=check_out_str,
+                                guests=guests
+                            )
+                            
+                            if "error" in hotel_data:
+                                st.error(f"❌ Hotel search failed: {hotel_data['error']}")
+                            elif not hotel_data.get('data'):
+                                st.warning(f"No hotels found in {city} for the selected dates.")
+                                st.info("Try different dates or a nearby city.")
+                            else:
+                                hotels = hotel_data['data']
+                                st.success(f"✅ Found {len(hotels)} hotels in {city}")
+                                
+                                # Save search to database
+                                save_hotel_search(city, check_in_str, check_out_str, guests, len(hotels))
+                                
+                                # Display summary
+                                st.subheader(f"🏨 Hotels in {city}")
+                                
+                                # Stats
+                                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                                with col_stat1:
+                                    st.metric("Hotels Found", len(hotels))
+                                with col_stat2:
+                                    avg_price = sum([
+                                        float(hotel.get('offers', [{}])[0].get('price', {}).get('total', 0))
+                                        for hotel in hotels if hotel.get('offers')
+                                    ]) / max(len(hotels), 1)
+                                    st.metric("Avg. Price", f"${avg_price:.2f}")
+                                with col_stat3:
+                                    st.metric("Dates", f"{check_in_str} to {check_out_str}")
+                                
+                                # Display each hotel
+                                for i, hotel in enumerate(hotels[:15]):  # Show first 15
+                                    hotel_info = hotel.get('hotel', {})
+                                    offers = hotel.get('offers', [])
+                                    
+                                    if offers:
+                                        offer = offers[0]
+                                        price_info = offer.get('price', {})
+                                        price = price_info.get('total', 'N/A')
+                                        currency = price_info.get('currency', 'USD')
+                                        
+                                        # Create expander for each hotel
+                                        with st.expander(
+                                            f"🏨 {hotel_info.get('name', 'Hotel')} - ${price} {currency}",
+                                            expanded=(i < 3)  # First 3 expanded
+                                        ):
+                                            # Hotel details in columns
+                                            col_left, col_right = st.columns([3, 1])
+                                            
+                                            with col_left:
+                                                # Hotel name and rating
+                                                st.write(f"**Hotel:** {hotel_info.get('name', 'N/A')}")
+                                                
+                                                # Rating
+                                                if hotel_info.get('rating'):
+                                                    rating = hotel_info['rating']
+                                                    st.write(f"**Rating:** {rating}/5")
+                                                
+                                                # Address
+                                                if hotel_info.get('address'):
+                                                    address = hotel_info['address']
+                                                    lines = address.get('lines', [])
+                                                    if lines:
+                                                        st.write(f"**Address:** {lines[0]}")
+                                                    city_name = address.get('cityName', '')
+                                                    if city_name:
+                                                        st.write(f"**City:** {city_name}")
+                                                
+                                                # Contact
+                                                if hotel_info.get('contact'):
+                                                    contact = hotel_info['contact']
+                                                    if contact.get('phone'):
+                                                        st.write(f"**Phone:** {contact['phone']}")
+                                            
+                                            with col_right:
+                                                # Price and actions
+                                                st.write(f"**Price:** ${price} {currency}")
+                                                st.write(f"**For:** {guests} guests, {rooms} room(s)")
+                                                
+                                                # Quick actions
+                                                if st.button("💾 Save", key=f"save_{i}", use_container_width=True):
+                                                    save_hotel_favorite(
+                                                        hotel_info.get('name', 'Hotel'),
+                                                        city,
+                                                        float(price) if price != 'N/A' else 0,
+                                                        currency
+                                                    )
+                                                    st.success("Hotel saved to favorites!")
+                                            
+                                            # Hotel description
+                                            if hotel_info.get('description'):
+                                                st.markdown("**Description:**")
+                                                st.write(hotel_info['description']['text'][:300] + "...")
+                                            
+                                            # Additional details
+                                            with st.expander("📋 More Details"):
+                                                col_d1, col_d2 = st.columns(2)
+                                                
+                                                with col_d1:
+                                                    # Amenities
+                                                    st.write("**Amenities:**")
+                                                    amenities = hotel_info.get('amenities', [])
+                                                    if amenities:
+                                                        for amenity in amenities[:10]:
+                                                            st.write(f"• {amenity}")
+                                                    else:
+                                                        st.write("No amenities listed")
+                                                
+                                                with col_d2:
+                                                    # Booking info
+                                                    st.write("**Booking Info:**")
+                                                    if offer.get('guests'):
+                                                        st.write(f"Guests: {offer['guests'].get('adults', guests)} adults")
+                                                    if offer.get('room'):
+                                                        st.write(f"Room Type: {offer['room'].get('typeEstimated', {}).get('category', 'Standard')}")
+                                                    st.write(f"Check-in: After {hotel_info.get('checkIn', {}).get('time', '14:00')}")
+                                                    st.write(f"Check-out: Before {hotel_info.get('checkOut', {}).get('time', '12:00')}")
+                                            
+                                            # Action buttons
+                                            st.markdown("---")
+                                            action_cols = st.columns(4)
+                                            
+                                            with action_cols[0]:
+                                                if st.button("📅 Book Now", key=f"book_{i}", use_container_width=True):
+                                                    st.info("In a real implementation, this would redirect to booking site")
+                                            
+                                            with action_cols[1]:
+                                                if st.button("📍 View on Map", key=f"map_{i}", use_container_width=True):
+                                                    address = hotel_info.get('address', {})
+                                                    if address.get('lines'):
+                                                        location = f"{city} {address['lines'][0]}".replace(' ', '+')
+                                                        st.markdown(f"[Open in Google Maps](https://www.google.com/maps/search/{location})")
+                                            
+                                            with action_cols[2]:
+                                                if st.button("📸 View Photos", key=f"photos_{i}", use_container_width=True):
+                                                    st.info("Hotel photos would appear here")
+                                            
+                                            with action_cols[3]:
+                                                if st.button("💰 Price Alert", key=f"alert_{i}", use_container_width=True):
+                                                    st.success(f"Price alert set for ${price}!")
+                                    
+                                    st.markdown("---")  # Separator between hotels
+                                
+                                # Download results
+                                st.download_button(
+                                    label="📥 Download Hotel List",
+                                    data=json.dumps([h.get('hotel', {}) for h in hotels], indent=2),
+                                    file_name=f"hotels_{city}_{check_in_str}.json",
+                                    mime="application/json"
+                                )
+                    
+                    except Exception as e:
+                        st.error(f"❌ Hotel search error: {str(e)}")
+                        logger.exception("Hotel search failed")
+    
+    with tab2:
+        st.subheader("💾 Saved Hotels")
+        
+        # Get saved hotels from database
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT hotel_name, city, price, currency, saved_at FROM hotel_favorites ORDER BY saved_at DESC")
+        saved_hotels = cursor.fetchall()
+        conn.close()
+        
+        if not saved_hotels:
+            st.info("No hotels saved yet. Search for hotels and click 'Save' to add them here.")
+        else:
+            st.write(f"You have {len(saved_hotels)} saved hotels:")
+            
+            for i, (hotel_name, city, price, currency, saved_at) in enumerate(saved_hotels):
+                with st.expander(f"🏨 {hotel_name} - {city}"):
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.write(f"**Hotel:** {hotel_name}")
+                        st.write(f"**Location:** {city}")
+                        st.write(f"**Price:** {price} {currency}")
+                        st.write(f"**Saved:** {saved_at}")
+                    
+                    with col2:
+                        if st.button("🗑️ Remove", key=f"remove_{i}"):
+                            # Remove from database
+                            conn = sqlite3.connect(DB_PATH)
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM hotel_favorites WHERE hotel_name = ? AND city = ?", 
+                                         (hotel_name, city))
+                            conn.commit()
+                            conn.close()
+                            st.success("Hotel removed!")
+                            st.rerun()
+                        
+                        if st.button("🔍 Search Again", key=f"search_again_{i}"):
+                            st.session_state.hotel_search_city = city
+                            st.rerun()
+                
+                st.write("---")
+    
+    with tab3:
+        st.subheader("📊 Hotel Booking Tips")
+        
+        tips = [
+            "**🎯 Best Booking Times:** Book hotels 1-3 months in advance for best prices",
+            "**💰 Price Comparison:** Always check multiple booking sites before confirming",
+            "**📅 Flexible Dates:** Mid-week stays are often cheaper than weekends",
+            "**🏨 Location Matters:** Hotels near city centers are more expensive but convenient",
+            "**⭐ Reviews:** Check recent guest reviews (last 3 months) for accurate info",
+            "**🎁 Packages:** Look for hotel+flight packages for better deals",
+            "**📱 Mobile Apps:** Booking through hotel apps sometimes offers exclusive discounts",
+            "**🔄 Cancellation:** Always check cancellation policies before booking",
+            "**🧳 Amenities:** Verify important amenities (WiFi, breakfast, parking) are included",
+            "**🗣️ Negotiate:** For longer stays, call the hotel directly for possible discounts"
+        ]
+        
+        for tip in tips:
+            st.write(f"• {tip}")
+        
+        st.markdown("---")
+        
+        # Quick search suggestions
+        st.write("**🔍 Popular Destinations:**")
+        popular_cities = ["Paris", "New York", "Tokyo", "London", "Dubai", "Bangkok", "Singapore", "Barcelona"]
+        
+        cols = st.columns(4)
+        for idx, popular_city in enumerate(popular_cities):
+            with cols[idx % 4]:
+                if st.button(f"🏙️ {popular_city}", key=f"popular_{popular_city}"):
+                    st.session_state.hotel_search_city = popular_city
+                    st.rerun()
+
 # -------------------------
 # PAGE: Saved Data
 # -------------------------
 elif page == "Saved Data":
     st.header("💾 Saved Data")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["Recent Searches", "Saved Itineraries", "Flight Searches", "Image Searches"])
+    tab1, tab2, tab3, tab4 ,tab5 = st.tabs(["Recent Searches", "Saved Itineraries", "Flight Searches", "Image Searches","Hotel Searches"])
     
     with tab1:
         st.subheader("Recent Searches")
@@ -2082,7 +2587,25 @@ elif page == "Saved Data":
                     st.write("**Status:** No landmark identified")
                 st.write(f"**Time:** {created_at}")
                 st.write("---")
-
+    with tab4:
+        st.subheader("Hotel Search History")
+        hotel_searches = get_hotel_searches(10)
+    
+        if not hotel_searches:
+            st.info("No hotel searches saved yet.")
+        else:
+            for destination, check_in, check_out, guests, results_count, created_at in hotel_searches:
+                st.write(f"**Destination:** {destination}")
+                st.write(f"**Check-in:** {check_in} | **Check-out:** {check_out}")
+                st.write(f"**Guests:** {guests} | **Results:** {results_count} hotels")
+                st.write(f"**Searched:** {created_at}")
+            
+            # Quick re-search button
+                if st.button(f"🔍 Search {destination} again", key=f"hotel_re_{destination}"):
+                    st.session_state.hotel_search_city = destination
+                    st.rerun()
+            
+                st.write("---")
 # -------------------------
 # Sidebar with Info
 # -------------------------
