@@ -144,6 +144,23 @@ def load_custom_css():
         font-size: 0.85rem;
         line-height: 1.2;
     }
+    
+    /* Custom button styling for vertical layout */
+    .feature-button {
+        width: 100%;
+        margin: 5px 0;
+        padding: 12px;
+        text-align: left;
+        border-radius: 10px;
+        border: 1px solid #e0e0e0;
+        background: white;
+        transition: all 0.3s;
+    }
+    
+    .feature-button:hover {
+        background: #f0f0f0;
+        transform: translateX(5px);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -165,59 +182,67 @@ st.set_page_config(
 load_custom_css()
 
 # -------------------------
+# Initialize session state
+# -------------------------
+if "selected_option" not in st.session_state:
+    st.session_state.selected_option = "Travel Search"
+
+# -------------------------
 # Header with Modern UI
 # -------------------------
 st.title("🌍 Travel Assistant RAGBot")
 st.markdown('<p class="subtitle">Your AI-powered travel companion — Gemini + LangChain + Amadeus + OpenWeather + Translation</p>', unsafe_allow_html=True)
 
 # -------------------------
-# Feature Cards (8 columns - 2 rows)
+# Feature Cards (8 columns - 2 rows) - MATCHING THE IMAGE
 # -------------------------
 st.markdown("### 🎯 How can I assist you today?")
 
-# First row of cards
-row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
+# Function to handle button clicks
+def handle_button_click(option_name):
+    st.session_state.selected_option = option_name
+    st.rerun()
 
-with row1_col1:
-    if st.button("📄\n\nDocument\nSearch", key="doc_search"):
-        st.session_state.selected_option = "Document Search"
-        
-with row1_col2:
-    if st.button("🌐\n\nTravel\nSearch", key="travel_search"):
-        st.session_state.selected_option = "Travel Search"
-        
-with row1_col3:
-    if st.button("✈️\n\nFlight\nSearch", key="flight_search"):
-        st.session_state.selected_option = "Flight Search"
-        
-with row1_col4:
-    if st.button("🏨\n\nHotel\nBooking", key="hotel_booking"):
-        st.session_state.selected_option = "Hotel Booking"
+# Create two columns for the layout like in the image
+col1, col2 = st.columns(2)
 
-# Second row of cards
-row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+with col1:
+    # First 4 options
+    if st.button("📄 Document Search", key="doc_search", use_container_width=True, 
+                 help="Search through uploaded travel documents"):
+        handle_button_click("Document Search")
+    
+    if st.button("🌐 Travel Search", key="travel_search", use_container_width=True,
+                 help="Search for travel information and weather"):
+        handle_button_click("Travel Search")
+    
+    if st.button("✈️ Flight Search", key="flight_search", use_container_width=True,
+                 help="Search for one-way flights"):
+        handle_button_click("Flight Search")
+    
+    if st.button("🏨 Hotel Booking", key="hotel_booking", use_container_width=True,
+                 help="Search and book hotels"):
+        handle_button_click("Hotel Booking")
 
-with row2_col1:
-    if st.button("🗓️\n\nItinerary\nGenerator", key="itinerary_gen"):
-        st.session_state.selected_option = "Itinerary Generator"
-
-with row2_col2:
-    if st.button("🗣️\n\nLanguage\nTranslator", key="translator"):
-        st.session_state.selected_option = "Language Translator"
-
-with row2_col3:
-    if st.button("💾\n\nSaved\nData", key="saved_data"):
-        st.session_state.selected_option = "Saved Data"
-
-with row2_col4:
-    if st.button("🔐\n\nAPI\nManagement", key="api_management"):
-        st.session_state.selected_option = "API Management"
+with col2:
+    # Last 4 options
+    if st.button("🗓️ Itinerary Generator", key="itinerary_gen", use_container_width=True,
+                 help="Generate personalized travel itineraries"):
+        handle_button_click("Itinerary Generator")
+    
+    if st.button("🗣️ Language Translator", key="translator", use_container_width=True,
+                 help="Translate text between multiple languages"):
+        handle_button_click("Language Translator")
+    
+    if st.button("💾 Saved Data", key="saved_data", use_container_width=True,
+                 help="View your saved searches and history"):
+        handle_button_click("Saved Data")
+    
+    if st.button("🔐 API Management", key="api_management", use_container_width=True,
+                 help="Manage and monitor API keys"):
+        handle_button_click("API Management")
 
 st.markdown("<br>", unsafe_allow_html=True)
-
-# Initialize session state
-if "selected_option" not in st.session_state:
-    st.session_state.selected_option = "Travel Search"
 
 # Show selected option
 st.info(f"**Current Mode:** {st.session_state.selected_option}")
@@ -1410,13 +1435,14 @@ if option == "Travel Search":
     
     travel_option = st.radio(
         "Search type:",
-        ("Web Search", "Weather Check", "Smart Assistant")
+        ("Web Search", "Weather Check", "Smart Assistant"),
+        horizontal=True
     )
     
     if travel_option == "Web Search":
         user_query = st.text_input("Where would you like to go or what do you want to know?", "where should I visit in goa")
         
-        if st.button("Search", type="primary"):
+        if st.button("Search", type="primary", use_container_width=True):
             if not user_query.strip():
                 st.warning("Please enter a travel query.")
             else:
@@ -1458,7 +1484,7 @@ Make it engaging and practical for travelers:"""
     
     elif travel_option == "Weather Check":
         city = st.text_input("Enter city name:", "Goa")
-        if st.button("Get Weather", type="primary"):
+        if st.button("Get Weather", type="primary", use_container_width=True):
             if not city.strip():
                 st.warning("Please enter a city name.")
             else:
@@ -1477,7 +1503,7 @@ Make it engaging and practical for travelers:"""
     elif travel_option == "Smart Assistant":
         agent_query = st.text_input("Ask anything (e.g., 'Weather in Tokyo and top attractions')", 
                                    "Best places to visit in Goa and current weather")
-        if st.button("Run Assistant", type="primary"):
+        if st.button("Run Assistant", type="primary", use_container_width=True):
             if not agent_query.strip():
                 st.warning("Please enter a query.")
             else:
@@ -1563,7 +1589,7 @@ elif option == "Document Search":
         chunks = split_text_with_meta(text)
         
         user_query = st.text_input("Enter your question here:", "where to visit in summer in india")
-        if st.button("Get Answer", type="primary"):
+        if st.button("Get Answer", type="primary", use_container_width=True):
             if not user_query.strip():
                 st.warning("Please type a question.")
             else:
@@ -1668,7 +1694,7 @@ elif option == "Flight Search":
                                           value=datetime.now() + timedelta(days=7))
             adults = st.number_input("Number of Passengers", min_value=1, max_value=9, value=1)
         
-        if st.button("Search Flights", type="primary"):
+        if st.button("Search Flights", type="primary", use_container_width=True):
             if not origin or not destination:
                 st.warning("Please enter origin and destination airport codes.")
             elif origin == destination:
@@ -1764,7 +1790,7 @@ elif option == "Hotel Booking":
             
             guests = st.number_input("Number of Guests", min_value=1, max_value=10, value=2)
             
-            if st.button("🔍 Search Hotels", type="primary"):
+            if st.button("🔍 Search Hotels", type="primary", use_container_width=True):
                 if not city.strip():
                     st.warning("Please enter a city name.")
                 else:
@@ -1882,7 +1908,7 @@ elif option == "Itinerary Generator":
     
     use_ai = st.checkbox("Use AI for detailed itinerary", value=True)
     
-    if st.button("Generate Itinerary", type="primary"):
+    if st.button("Generate Itinerary", type="primary", use_container_width=True):
         if not destination:
             st.warning("Please enter a destination.")
         else:
@@ -2312,7 +2338,7 @@ elif option == "API Management":
     else:
         st.info("No API usage data recorded yet.")
     
-    if st.button("🔄 Run API Health Check", type="primary"):
+    if st.button("🔄 Run API Health Check", type="primary", use_container_width=True):
         with st.spinner("Checking API health..."):
             new_validation = api_manager.validate_keys()
             
