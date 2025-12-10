@@ -1008,78 +1008,7 @@ weather_tool_wrapped = Tool(
     func=weather_tool,
     description="Return weather for a city. Input is a city name."
 )
-def test_gemini_api_key(api_key: str):
-    """Test a Gemini API key to see what models are available"""
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        
-        # Get all models
-        models = genai.list_models()
-        
-        # Find vision-capable models
-        vision_models = []
-        for model in models:
-            try:
-                if hasattr(model, 'supported_generation_methods'):
-                    methods = model.supported_generation_methods
-                    if hasattr(methods, '__iter__') and 'generateContent' in methods:
-                        vision_models.append({
-                            'name': model.name,
-                            'description': model.description if hasattr(model, 'description') else '',
-                            'methods': list(methods) if hasattr(methods, '__iter__') else str(methods)
-                        })
-            except:
-                continue
-        
-        return {
-            'success': True,
-            'total_models': len(models),
-            'vision_models': vision_models,
-            'all_models': [model.name for model in models[:50]],  # First 50
-            'sample_models': [
-                {'name': model.name, 'description': getattr(model, 'description', '')}
-                for model in models[:10]
-            ]
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': str(e)
-        }
 
-def check_vision_status():
-    """Check and display vision system status"""
-    if not vision_client:
-        return {"status": "not_configured", "message": "No API key configured"}
-    
-    status = vision_client.get_status()
-    
-    if status['vision_available']:
-        return {
-            "status": "ready",
-            "message": f"✅ Vision is ready using {status['model_name']}",
-            "details": status
-        }
-    elif status['model_initialized']:
-        return {
-            "status": "text_only",
-            "message": f"⚠️ Model {status['model_name']} loaded but vision may not be supported",
-            "details": status
-        }
-    elif status['initialization_error']:
-        return {
-            "status": "error",
-            "message": f"❌ Initialization error: {status['initialization_error'][:100]}",
-            "details": status
-        }
-    else:
-        return {
-            "status": "unavailable",
-            "message": "❌ Vision capabilities not available",
-            "details": status
-        }
 
 # -------------------------
 # Image Recognition
@@ -1091,149 +1020,55 @@ class VisionRecognition:
         self.model_name = None
         self.vision_available = False
         self.initialization_error = None
+        self.text_only_mode = True  # Force text-only mode
         
         if gemini_api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key)
                 
-                logger.info("🔧 Initializing Gemini Vision...")
+                logger.info("🔧 Initializing Gemini (Text-only mode)...")
                 
-                # Get all available models
-                try:
-                    available_models = genai.list_models()
-                    available_model_names = [model.name for model in available_models]
-                    logger.info(f"📊 Found {len(available_model_names)} total models")
-                    
-                    # Log first few models for debugging
-                    logger.info("First 5 available models:")
-                    for i, model in enumerate(available_models[:5]):
-                        logger.info(f"  {i+1}. {model.name}")
-                        if hasattr(model, 'supported_generation_methods'):
-                            logger.info(f"     Methods: {model.supported_generation_methods}")
-                    
-                except Exception as list_error:
-                    error_msg = f"Failed to list models: {list_error}"
-                    logger.error(error_msg)
-                    self.initialization_error = error_msg
-                    return
-                
-                # Define models to try in order of preference
-                models_to_try = [
-                    "gemini-1.5-flash",      # Most reliable and fast
-                    "gemini-1.5-pro",        # More capable
-                    "gemini-1.0-pro-vision", # Older vision model
-                    "gemini-pro-vision",     # Standard vision model
-                    "gemini-pro",            # Try non-vision specific
-                    "gemini-2.0-flash",      # Experimental/newer
-                    "gemini-2.0-flash-exp",  # Experimental
+                # Try to load a text model
+                text_models = [
+                    "gemini-2.0-flash",
+                    "gemini-2.0-flash-exp",
+                    "gemini-flash-latest",
+                    "gemini-pro-latest",
+                    "gemini-pro",
+                    "gemini-1.5-flash",
+                    "gemini-1.5-pro"
                 ]
                 
-                logger.info(f"🔄 Testing {len(models_to_try)} potential models...")
-                
-                for model_name in models_to_try:
+                for model_name in text_models:
                     try:
-                        # Try both with and without 'models/' prefix
-                        variations = [
-                            f"models/{model_name}",
-                            model_name
-                        ]
-                        
+                        variations = [model_name, f"models/{model_name}"]
                         for model_variation in variations:
-                            if model_variation in available_model_names:
-                                logger.info(f"  Testing: {model_variation}")
+                            try:
+                                self.model = genai.GenerativeModel(model_variation)
+                                self.model_name = model_variation
                                 
-                                try:
-                                    # Create the model instance
-                                    self.model = genai.GenerativeModel(model_variation)
-                                    self.model_name = model_variation
-                                    
-                                    # First test with text-only to verify basic functionality
-                                    logger.info(f"    Basic text test...")
-                                    text_response = self.model.generate_content("Say 'Hello World'")
-                                    
-                                    if text_response and hasattr(text_response, 'text'):
-                                        logger.info(f"    ✅ Text test passed")
-                                        
-                                        # Now test vision capability with a simple image
-                                        try:
-                                            # Create a simple test image in memory
-                                            test_img = Image.new('RGB', (100, 100), color=(255, 0, 0))  # Red image
-                                            img_bytes = io.BytesIO()
-                                            test_img.save(img_bytes, format='PNG')
-                                            img_bytes.seek(0)
-                                            
-                                            # Try to analyze the image
-                                            vision_prompt = "What color is this image?"
-                                            vision_response = self.model.generate_content(
-                                                [vision_prompt, img_bytes.getvalue()]
-                                            )
-                                            
-                                            if vision_response and hasattr(vision_response, 'text'):
-                                                self.vision_available = True
-                                                logger.info(f"    ✅ Vision test passed!")
-                                                logger.info(f"🎉 Successfully loaded vision model: {model_variation}")
-                                                
-                                                # Test the specific prompt format we'll use
-                                                try:
-                                                    travel_prompt = "What is this place?"
-                                                    test_response = self.model.generate_content(
-                                                        [travel_prompt, img_bytes.getvalue()]
-                                                    )
-                                                    if test_response:
-                                                        logger.info(f"    ✅ Travel prompt test passed")
-                                                except Exception as prompt_test_error:
-                                                    logger.warning(f"    Travel prompt test warning: {prompt_test_error}")
-                                                
-                                                return  # Success! Exit the loop
-                                            
-                                        except Exception as vision_test_error:
-                                            logger.warning(f"    Vision test failed: {str(vision_test_error)[:100]}")
-                                            # This model doesn't support vision, try next one
-                                            self.model = None
-                                            self.model_name = None
-                                            continue
-                                    
-                                except Exception as model_error:
-                                    logger.warning(f"    Model initialization failed: {str(model_error)[:100]}")
-                                    self.model = None
-                                    self.model_name = None
-                                    continue
-                                
-                    except Exception as e:
-                        logger.warning(f"  Error testing {model_name}: {str(e)[:100]}")
+                                # Test with text
+                                test_response = self.model.generate_content("Say hello")
+                                if test_response and hasattr(test_response, 'text'):
+                                    logger.info(f"✅ Loaded text model: {model_variation}")
+                                    return
+                            except:
+                                continue
+                    except:
                         continue
                 
-                # If we get here, no vision model worked
-                if not self.vision_available:
-                    warning_msg = "No vision-capable model found or initialized"
-                    logger.warning(warning_msg)
-                    
-                    # Try a fallback: use any working model (even if not vision)
-                    try:
-                        logger.info("🔄 Trying fallback to gemini-1.5-flash...")
-                        self.model = genai.GenerativeModel('gemini-1.5-flash')
-                        self.model_name = 'gemini-1.5-flash'
-                        
-                        # Quick test
-                        test_response = self.model.generate_content("Test")
-                        if test_response:
-                            logger.info("✅ Fallback model loaded (text-only)")
-                            self.initialization_error = "Model loaded but vision may not be supported"
-                    except Exception as fallback_error:
-                        error_msg = f"Fallback also failed: {fallback_error}"
-                        logger.error(error_msg)
-                        self.initialization_error = error_msg
-                        
+                logger.warning("No text model loaded")
+                
             except Exception as e:
-                error_msg = f"Failed to initialize Gemini Vision: {e}"
+                error_msg = f"Failed to initialize Gemini: {e}"
                 logger.error(error_msg)
                 self.initialization_error = error_msg
     
     def analyze_image(self, image_file):
-        """Analyze image using Gemini Vision or fallback to basic analysis"""
+        """Analyze image using basic properties + text description from user"""
         try:
-            # Ensure we have a file/bytes to work with
+            # Ensure we have a file
             if image_file is None:
                 return {
                     'description': "❌ No image provided",
@@ -1244,12 +1079,10 @@ class VisionRecognition:
             # Read image data
             if hasattr(image_file, 'read'):
                 content = image_file.read()
-                # Reset file pointer for potential reuse
                 image_file.seek(0)
             elif hasattr(image_file, 'getvalue'):
                 content = image_file.getvalue()
             else:
-                # Assume it's already bytes
                 content = image_file
             
             if not content:
@@ -1263,97 +1096,136 @@ class VisionRecognition:
             try:
                 image = Image.open(io.BytesIO(content))
                 
-                # Convert RGBA to RGB if necessary
-                if image.mode == 'RGBA':
-                    image = image.convert('RGB')
+                # Get image properties
+                image_format = image.format if image.format else "Unknown"
+                dimensions = f"{image.width} x {image.height} pixels"
+                color_mode = image.mode
                 
-                # Resize if image is too large (to save tokens/bandwidth)
-                max_size = (1024, 1024)
-                if image.width > max_size[0] or image.height > max_size[1]:
-                    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+                # Basic analysis
+                is_landscape = image.width > image.height * 1.2
+                is_square = abs(image.width - image.height) < 10
+                aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
+                
+                # Ask user for description
+                st.session_state['current_image'] = {
+                    'format': image_format,
+                    'dimensions': dimensions,
+                    'color_mode': color_mode,
+                    'aspect': aspect
+                }
+                
+                # Show image properties and ask for description
+                analysis = f"""
+## 🖼️ Basic Image Analysis
+
+**Image Properties:**
+- **Format:** {image_format}
+- **Dimensions:** {dimensions}
+- **Color Mode:** {color_mode}
+- **Aspect Ratio:** {aspect}
+- **Size:** Approximately {image.width * image.height / 1000000:.1f} megapixels
+
+### 🔍 Manual Image Description
+Since Gemini Vision is not available, please describe what you see in the image:
+
+1. **What landmark or place is this?**
+2. **What country/city is it located in?**
+3. **What can you see in the image?**
+4. **What makes it interesting for travelers?**
+
+**Note:** Once you describe the image, I can provide travel information about it!
+"""
+                
+                return {
+                    'description': analysis,
+                    'source': 'manual_input_required',
+                    'vision_available': False,
+                    'image_properties': {
+                        'format': image_format,
+                        'dimensions': dimensions,
+                        'color_mode': color_mode,
+                        'aspect': aspect
+                    }
+                }
                 
             except Exception as img_error:
                 logger.error(f"Failed to process image: {img_error}")
                 return self._basic_image_analysis_from_file(content)
-            
-            if self.vision_available and self.model:
-                # Use Gemini Vision
-                try:
-                    # Track API usage
-                    api_manager.track_usage('GOOGLE_API_KEY', True)
-                    
-                    prompt = """
-                    Analyze this travel-related image and provide detailed travel information:
-                    
-                    1. **Identification**: What landmark/place is this? (City, Country)
-                    2. **Description**: What makes this place special or famous?
-                    3. **Travel Experience**: What can visitors expect to see/do?
-                    4. **Best Time to Visit**: Seasonal recommendations
-                    5. **Practical Tips**: Entry requirements, costs, travel tips
-                    6. **Nearby Attractions**: Other places to visit in the area
-                    
-                    Format your response with clear headings and bullet points.
-                    Be descriptive and helpful for travelers planning a visit.
-                    """
-                    
-                    # Convert image to bytes for Gemini
-                    img_bytes = io.BytesIO()
-                    image.save(img_bytes, format='PNG')
-                    
-                    # Generate analysis
-                    response = self.model.generate_content([prompt, img_bytes.getvalue()])
-                    
-                    if response and hasattr(response, 'text'):
-                        return {
-                            'description': response.text,
-                            'source': 'gemini_vision',
-                            'model_used': self.model_name,
-                            'vision_available': True,
-                            'success': True
-                        }
-                    else:
-                        raise Exception("No response text from model")
-                        
-                except Exception as vision_error:
-                    logger.error(f"Gemini Vision analysis failed: {vision_error}")
-                    api_manager.track_usage('GOOGLE_API_KEY', False)
-                    
-                    # Fall back to basic analysis
-                    return self._basic_image_analysis(image)
-            
-            else:
-                # Vision not available, use basic analysis
-                return self._basic_image_analysis(image)
                 
         except Exception as e:
             logger.exception(f"Image analysis failed: {e}")
-            api_manager.track_usage('GOOGLE_API_KEY', False)
-            
             return {
-                'description': f"❌ Error analyzing image: {str(e)[:200]}",
+                'description': f"❌ Error: {str(e)[:200]}",
                 'source': 'error',
-                'vision_available': False,
-                'error': str(e)
+                'vision_available': False
+            }
+    
+    def analyze_with_description(self, image_description: str, image_properties: dict = None):
+        """Generate travel info based on user description"""
+        if not self.model:
+            return {
+                'description': "❌ No AI model available",
+                'source': 'error',
+                'vision_available': False
+            }
+        
+        try:
+            prompt = f"""
+Based on this image description, provide comprehensive travel information:
+
+**Image Description:**
+{image_description}
+
+**Image Properties:**
+- Format: {image_properties.get('format', 'Unknown') if image_properties else 'Unknown'}
+- Dimensions: {image_properties.get('dimensions', 'Unknown') if image_properties else 'Unknown'}
+
+Please provide detailed travel information including:
+1. **Location Identification**: Likely city/country
+2. **Travel Significance**: Why it's famous
+3. **Best Time to Visit**: Seasons and weather
+4. **Things to Do**: Activities and attractions
+5. **Travel Tips**: Practical advice for visitors
+6. **Nearby Attractions**: Other places to see
+
+Be descriptive and helpful for travelers. If you're not sure, provide general travel tips for that type of destination.
+"""
+            
+            response = self.model.generate_content(prompt)
+            
+            if response and hasattr(response, 'text'):
+                return {
+                    'description': response.text,
+                    'source': 'gemini_text',
+                    'model_used': self.model_name,
+                    'vision_available': False,
+                    'success': True
+                }
+            else:
+                return {
+                    'description': "❌ No response from AI model",
+                    'source': 'error',
+                    'vision_available': False
+                }
+                
+        except Exception as e:
+            logger.error(f"Text analysis failed: {e}")
+            return {
+                'description': f"❌ AI analysis failed: {str(e)[:200]}",
+                'source': 'error',
+                'vision_available': False
             }
     
     def _basic_image_analysis(self, image):
-        """Basic image analysis when vision API is not available"""
+        """Basic image analysis"""
         try:
             image_format = image.format if hasattr(image, 'format') and image.format else "Unknown"
             dimensions = f"{image.width} x {image.height} pixels"
             color_mode = image.mode if hasattr(image, 'mode') else "Unknown"
             
-            # Basic image properties analysis
             is_landscape = image.width > image.height * 1.2
             is_square = abs(image.width - image.height) < 10
             aspect = "Landscape" if is_landscape else ("Square" if is_square else "Portrait")
-            
-            # Estimate if it might be travel-related
-            might_be_travel = (
-                is_landscape or  # Landscape often means scenery
-                image.width > 800 or  # Large images often mean important subjects
-                color_mode == 'RGB'  # Color images more likely to be travel photos
-            )
             
             analysis = f"""
 ## 🖼️ Basic Image Analysis
@@ -1365,33 +1237,16 @@ class VisionRecognition:
 - **Aspect Ratio:** {aspect}
 - **Size:** Approximately {image.width * image.height / 1000000:.1f} megapixels
 
-**Status:** {'🔴 Gemini Vision API is currently unavailable'}
+### 🔍 Gemini Vision Status
+⚠️ **Gemini Vision is not available with your current API key.**
 
-### 🔍 What can be analyzed:
-This appears to be {'a travel-related image' if might_be_travel else 'an image'}. 
-Without AI vision capabilities, I can only analyze basic properties.
+### 🚀 How to Enable Vision:
+1. Get a new API key from [Google AI Studio](https://makersuite.google.com/)
+2. Make sure billing is enabled in Google Cloud Console
+3. Enable "Generative Language API" and "Vertex AI API"
 
-### 🚀 To enable AI-powered travel analysis:
-
-1. **API Key Configuration:**
-   - Ensure your Google API key supports Gemini Vision models
-   - Check that "Generative Language API" is enabled in Google Cloud Console
-
-2. **Model Requirements:**
-   - You need access to models like `gemini-1.5-flash` or `gemini-pro-vision`
-   - Make sure billing is enabled for your Google Cloud project
-
-3. **Quick Fix:**
-   - Generate a new API key from [Google AI Studio](https://makersuite.google.com/)
-   - Add it to your `.streamlit/secrets.toml` file
-
-### 📋 Manual Identification Tips:
-1. **Google Images**: Drag & drop to [images.google.com]
-2. **Travel Forums**: Try TripAdvisor or Lonely Planet forums
-3. **Reverse Image Search**: Use tools like TinEye
-4. **Social Media**: Reddit's r/travel or r/whereisthis
-
-**Note:** To get detailed travel information about this image, Gemini Vision API access is required.
+### 💡 Alternative Solution:
+**Describe what you see in the image**, and I'll provide travel information based on your description!
 """
             
             return {
@@ -1422,13 +1277,11 @@ Unable to process the uploaded image. Please check:
 1. **File Format:** Ensure it's JPG, PNG, or WebP format
 2. **File Size:** Image may be too large or corrupted
 3. **Permissions:** Check file read permissions
-4. **Corruption:** Try a different image file
 
 ### ✅ What to try:
 - Upload a different image file
-- Convert to JPG format if using PNG/WebP
+- Convert to JPG format
 - Reduce image size (under 10MB recommended)
-- Check internet connection for API access
 
 **Supported formats:** JPG, PNG, WebP, BMP
 **Max size:** 20MB (recommended under 5MB)
@@ -1438,114 +1291,15 @@ Unable to process the uploaded image. Please check:
         }
     
     def get_status(self):
-        """Get the current status of vision capabilities"""
+        """Get the current status"""
         return {
             'vision_available': self.vision_available,
             'model_name': self.model_name,
             'model_initialized': self.model is not None,
             'api_key_configured': bool(self.gemini_api_key),
-            'initialization_error': self.initialization_error
+            'initialization_error': self.initialization_error,
+            'text_only_mode': self.text_only_mode
         }
-    
-    def test_vision_capability(self):
-        """Test if vision is working with a simple test image"""
-        if not self.vision_available or not self.model:
-            return {"success": False, "error": "Vision not available"}
-        
-        try:
-            # Create a simple test image
-            test_img = Image.new('RGB', (100, 100), color=(0, 255, 0))  # Green image
-            img_bytes = io.BytesIO()
-            test_img.save(img_bytes, format='PNG')
-            
-            prompt = "What color is this square?"
-            response = self.model.generate_content([prompt, img_bytes.getvalue()])
-            
-            if response and hasattr(response, 'text'):
-                return {
-                    "success": True,
-                    "response": response.text[:100],
-                    "model": self.model_name
-                }
-            else:
-                return {"success": False, "error": "No response from model"}
-                
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-# Initialize Vision client
-gemini_key = api_manager.get_key('GOOGLE_API_KEY')
-vision_client = VisionRecognition(gemini_key) if gemini_key else None
-
-# -------------------------
-# Mock Hotel Data for Fallback
-# -------------------------
-def get_mock_hotel_data(city_name: str = "Sample City"):
-    """Provide mock hotel data for testing"""
-    return {
-        "data": [
-            {
-                "hotel": {
-                    "name": f"Grand {city_name} Hotel",
-                    "rating": 4.3,
-                    "address": {
-                        "cityName": city_name,
-                        "lines": ["123 Main Street"],
-                        "postalCode": "10001"
-                    },
-                    "description": {
-                        "text": f"A luxurious hotel in the heart of {city_name} with premium amenities."
-                    },
-                    "amenities": ["Free WiFi", "Swimming Pool", "Fitness Center", "Restaurant", "Spa"]
-                },
-                "offers": [{
-                    "price": {
-                        "total": "150",
-                        "currency": "USD"
-                    },
-                    "room": {
-                        "typeEstimated": {
-                            "category": "Standard Room",
-                            "bedType": "King Bed"
-                        }
-                    },
-                    "guests": {
-                        "adults": 2
-                    }
-                }]
-            },
-            {
-                "hotel": {
-                    "name": f"{city_name} Central Plaza",
-                    "rating": 4.0,
-                    "address": {
-                        "cityName": city_name,
-                        "lines": ["456 Central Avenue"],
-                        "postalCode": "10002"
-                    },
-                    "description": {
-                        "text": f"Modern hotel with great city views in downtown {city_name}."
-                    },
-                    "amenities": ["Free WiFi", "Business Center", "Bar", "Room Service"]
-                },
-                "offers": [{
-                    "price": {
-                        "total": "95",
-                        "currency": "USD"
-                    },
-                    "room": {
-                        "typeEstimated": {
-                            "category": "Deluxe Room",
-                            "bedType": "Queen Bed"
-                        }
-                    },
-                    "guests": {
-                        "adults": 2
-                    }
-                }]
-            }
-        ]
-    }
-
 # -------------------------
 # Streamlit Navigation
 # -------------------------
@@ -1933,285 +1687,135 @@ elif page == "Image Recognition":
     st.header("🖼️ Image Recognition for Travel")
     
     if not vision_client:
-        st.error("❌ Gemini API key not configured. Please add GOOGLE_API_KEY to secrets.")
-        st.info("Required: A Gemini API key with vision capabilities")
-        st.markdown("""
-        ### How to get a Gemini API key:
-        1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-        2. Create a new API key
-        3. Make sure it has access to Gemini Vision models
-        4. Add it to your `.streamlit/secrets.toml` file:
-        ```
-        GOOGLE_API_KEY = "your-api-key-here"
-        ```
-        """)
+        st.error("❌ Gemini API key not configured.")
+        st.info("Add GOOGLE_API_KEY to your `.streamlit/secrets.toml` file")
     else:
-        # Show vision status
-        col1, col2 = st.columns([3, 1])
+        # Show status
+        status = vision_client.get_status()
+        
+        col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            if vision_client.vision_available:
-                st.success(f"✅ Gemini Vision is ready (using {vision_client.model_name})")
+            if status.get('model_initialized'):
+                st.success(f"✅ Text AI Ready (using {status.get('model_name', 'Unknown')})")
             else:
-                st.warning("⚠️ Gemini Vision is not available")
+                st.warning("⚠️ Limited functionality")
+        
         with col2:
-            if st.button("🔄 Refresh Status"):
+            if st.button("🔄 Refresh", key="refresh_vision"):
                 st.rerun()
         
-        # Debug information
-        if not vision_client.vision_available:
-            with st.expander("🔧 Debug Information"):
-                st.write(f"**Gemini Key Configured:** {bool(gemini_key)}")
-                st.write(f"**Vision Available:** {vision_client.vision_available}")
-                st.write(f"**Model Loaded:** {vision_client.model_name}")
-                st.write(f"**Model Initialized:** {vision_client.model is not None}")
-                
-                # Test API key directly
-                if st.button("Test API Key"):
-                    try:
-                        import google.generativeai as genai
-                        genai.configure(api_key=gemini_key)
-                        models = genai.list_models()
-                        vision_models = [m.name for m in models if "vision" in str(m.supported_generation_methods).lower()]
-                        
-                        st.write(f"**Available Vision Models:**")
-                        if vision_models:
-                            for model in vision_models[:5]:  # Show first 5
-                                st.write(f"- {model}")
-                        else:
-                            st.error("No vision models found in your API key")
-                    except Exception as e:
-                        st.error(f"API Key test failed: {e}")
+        with col3:
+            if st.button("ℹ️ Status", key="show_status"):
+                st.session_state['show_status'] = not st.session_state.get('show_status', False)
         
-        st.info("📸 Upload an image of a place, landmark, or travel destination to get information about it!")
+        # Show detailed status if requested
+        if st.session_state.get('show_status', False):
+            with st.expander("🔧 System Status", expanded=True):
+                st.json(status)
         
-        # Image upload section
+        st.info("📸 Upload an image and describe what you see to get travel information!")
+        
+        # Image upload
         uploaded_image = st.file_uploader(
             "Choose an image file", 
-            type=["jpg", "jpeg", "png", "webp", "bmp"],
-            help="Maximum file size: 20MB. Supported formats: JPG, PNG, WebP, BMP"
+            type=["jpg", "jpeg", "png", "webp"],
+            help="Upload an image of a travel destination"
         )
         
-        # Advanced options
-        with st.expander("⚙️ Advanced Options"):
-            analysis_type = st.selectbox(
-                "Analysis Detail Level",
-                ["Comprehensive Travel Info", "Landmark Identification", "Quick Analysis", "Custom Prompt"]
-            )
-            
-            custom_prompt = ""
-            if analysis_type == "Custom Prompt":
-                custom_prompt = st.text_area(
-                    "Enter your custom prompt:",
-                    value="Analyze this travel image and tell me what you see.",
-                    height=100
-                )
-        
-        # Process uploaded image
         if uploaded_image:
-            # Display the uploaded image
-            col_img1, col_img2 = st.columns([2, 1])
+            # Display image
+            st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
             
-            with col_img1:
-                st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
-            
-            with col_img2:
-                st.write("**Image Details:**")
+            # Show image info
+            with st.expander("📋 Image Details"):
                 try:
                     image = Image.open(uploaded_image)
-                    st.write(f"**Format:** {image.format}")
-                    st.write(f"**Dimensions:** {image.width} × {image.height}")
-                    st.write(f"**Mode:** {image.mode}")
-                    st.write(f"**Size:** {uploaded_image.size / 1024:.1f} KB")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Format:** {image.format}")
+                        st.write(f"**Dimensions:** {image.width} × {image.height}")
+                    with col2:
+                        st.write(f"**Color Mode:** {image.mode}")
+                        st.write(f"**Size:** {uploaded_image.size / 1024:.1f} KB")
                 except:
                     st.write("Unable to read image details")
             
-            # Analysis button
-            if st.button("🔍 Analyze Image", type="primary", use_container_width=True):
+            # Analyze button
+            if st.button("🔍 Analyze Image", type="primary"):
                 with st.spinner("Analyzing image..."):
-                    try:
-                        # Show progress indicators
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                    result = vision_client.analyze_image(uploaded_image)
+                    
+                    if result.get('source') == 'manual_input_required':
+                        st.markdown("---")
+                        st.subheader("📊 Basic Analysis")
+                        st.markdown(result['description'])
                         
-                        status_text.text("Processing image...")
-                        progress_bar.progress(20)
+                        # Ask for user description
+                        st.markdown("---")
+                        st.subheader("✍️ Describe What You See")
                         
-                        # Get the analysis prompt based on selection
-                        if analysis_type == "Comprehensive Travel Info":
-                            prompt = """
-                            Analyze this travel-related image and provide comprehensive travel information:
-                            
-                            1. **Landmark Identification**: What is this place? Name the landmark, city, and country
-                            2. **Historical Significance**: Brief history and cultural importance
-                            3. **Travel Experience**: What makes it special for visitors?
-                            4. **Best Time to Visit**: Recommended seasons and weather conditions
-                            5. **Things to Do**: Activities, tours, and attractions
-                            6. **Practical Information**: Entry fees, opening hours, accessibility
-                            7. **Nearby Attractions**: Other places to visit in the area
-                            8. **Travel Tips**: Local customs, photography rules, safety tips
-                            
-                            Format with clear headings and use bullet points for lists.
-                            """
-                        elif analysis_type == "Landmark Identification":
-                            prompt = """
-                            Identify this landmark/travel destination:
-                            
-                            1. **Exact Name**: Official name of the place
-                            2. **Location**: City, Region, Country
-                            3. **Type**: (e.g., Historical site, Natural wonder, Museum, etc.)
-                            4. **Brief Description**: What is it known for?
-                            5. **UNESCO Status**: If applicable
-                            6. **Construction Period**: When was it built/formed?
-                            7. **Architectural Style**: If applicable
-                            8. **Key Features**: What makes it unique?
-                            """
-                        elif analysis_type == "Quick Analysis":
-                            prompt = """
-                            Briefly identify this travel destination:
-                            - Name
-                            - Location
-                            - Main attraction
-                            - One interesting fact
-                            """
-                        else:
-                            prompt = custom_prompt
+                        description = st.text_area(
+                            "Describe the image (e.g., 'This is the Eiffel Tower in Paris, France'):",
+                            height=150,
+                            placeholder="Describe the landmark, location, and what you see..."
+                        )
                         
-                        status_text.text("Sending to Gemini Vision API...")
-                        progress_bar.progress(50)
-                        
-                        # Analyze image
-                        vision_response = vision_client.analyze_image(uploaded_image)
-                        
-                        status_text.text("Processing results...")
-                        progress_bar.progress(80)
-                        
-                        # Display results
+                        if description:
+                            if st.button("🚀 Generate Travel Info", type="primary"):
+                                with st.spinner("Generating travel information..."):
+                                    travel_info = vision_client.analyze_with_description(
+                                        description, 
+                                        result.get('image_properties')
+                                    )
+                                    
+                                    st.markdown("---")
+                                    st.subheader("🌍 Travel Information")
+                                    
+                                    if travel_info.get('success'):
+                                        st.markdown(travel_info['description'])
+                                        
+                                        # Save to database
+                                        try:
+                                            save_image_search(
+                                                image_name=uploaded_image.name,
+                                                landmark_name=None,
+                                                confidence=0.5,
+                                                travel_info=travel_info['description'][:2000]
+                                            )
+                                            st.toast("✅ Analysis saved!", icon="✅")
+                                        except:
+                                            pass
+                                    else:
+                                        st.error(travel_info.get('description', "Failed to generate info"))
+                    else:
+                        # Direct result
                         st.markdown("---")
                         st.subheader("📊 Analysis Results")
-                        
-                        if 'error' in vision_response:
-                            st.error(f"❌ Error: {vision_response['error']}")
-                        else:
-                            # Show source information
-                            with st.expander("📋 Analysis Details", expanded=True):
-                                if vision_response.get('warning'):
-                                    st.warning(vision_response['warning'])
-                                
-                                if vision_response.get('source') == 'gemini_vision':
-                                    st.success("✅ Generated by Gemini Vision AI")
-                                    if vision_response.get('model_used'):
-                                        st.caption(f"Model: {vision_response.get('model_used')}")
-                                elif vision_response.get('source') == 'basic_analysis':
-                                    st.info("ℹ️ Basic image analysis (AI Vision not available)")
-                                else:
-                                    st.info("ℹ️ Manual analysis")
-                            
-                            # Display the main description
-                            if vision_response.get('description'):
-                                st.markdown(vision_response['description'])
-                            
-                            # Save to database
-                            try:
-                                # Extract potential landmark name from response
-                                landmark_name = None
-                                description = vision_response.get('description', '')
-                                
-                                # Simple extraction of potential place names
-                                if "taj mahal" in description.lower():
-                                    landmark_name = "Taj Mahal"
-                                elif "eiffel" in description.lower():
-                                    landmark_name = "Eiffel Tower"
-                                elif "colosseum" in description.lower():
-                                    landmark_name = "Colosseum"
-                                elif "great wall" in description.lower():
-                                    landmark_name = "Great Wall of China"
-                                
-                                save_image_search(
-                                    image_name=uploaded_image.name,
-                                    landmark_name=landmark_name,
-                                    confidence=0.8 if vision_response.get('vision_available') else 0.3,
-                                    travel_info=vision_response.get('description', '')[:2000]
-                                )
-                                
-                                st.toast("✅ Analysis saved to history", icon="✅")
-                            except Exception as save_error:
-                                logger.error(f"Failed to save image search: {save_error}")
-                        
-                        status_text.text("Complete!")
-                        progress_bar.progress(100)
-                        time.sleep(0.5)
-                        progress_bar.empty()
-                        status_text.empty()
-                        
-                    except Exception as e:
-                        st.error(f"❌ Image analysis failed: {str(e)}")
-                        logger.exception(f"Image analysis error: {e}")
+                        st.markdown(result['description'])
         
-        # Image search history
-        with st.expander("📚 Recent Image Analyses"):
-            recent_searches = get_image_searches(5)
-            
-            if not recent_searches:
-                st.info("No image searches saved yet.")
-            else:
-                for image_name, landmark_name, confidence, created_at in recent_searches:
-                    col_a, col_b = st.columns([3, 1])
-                    with col_a:
-                        st.write(f"**{image_name}**")
-                        if landmark_name:
-                            st.write(f"📍 {landmark_name}")
-                        if confidence:
-                            st.write(f"Confidence: {confidence:.0%}")
-                    with col_b:
-                        st.write(f"_{created_at}_")
-                    st.write("---")
-        
-        # Tips section
-        with st.expander("💡 Tips for Best Results"):
+        # Alternative approach section
+        with st.expander("💡 How to Get Better Results"):
             st.markdown("""
-            ### 📸 Image Guidelines:
-            1. **Clear & Well-Lit**: Avoid blurry or dark photos
-            2. **Landmark Focus**: Center the main subject
-            3. **Minimal Crowds**: Fewer people = better recognition
-            4. **Daylight Photos**: Natural light works best
-            5. **Multiple Angles**: Try different views of the same place
+            ### Option 1: Manual Description (Current Method)
+            1. Upload your image
+            2. Describe what you see
+            3. Get AI-generated travel info
             
-            ### 🏆 Best Results With:
-            - **Famous Landmarks**: Eiffel Tower, Taj Mahal, Statue of Liberty
-            - **Natural Wonders**: Grand Canyon, Niagara Falls
-            - **Iconic Buildings**: Sydney Opera House, Burj Khalifa
-            - **Historical Sites**: Pyramids, Roman Ruins
+            ### Option 2: Enable Gemini Vision
+            1. Get a new API key from [Google AI Studio](https://makersuite.google.com/)
+            2. Make sure to enable billing
+            3. Enable required APIs in Google Cloud Console
             
-            ### 🔧 Troubleshooting:
-            - **No Results?** Try a clearer image
-            - **Wrong Identification?** Upload a different angle
-            - **API Errors?** Check your Gemini API key quota
-            - **Slow Response?** Large images take longer to process
+            ### Option 3: Use External Tools
+            - **Google Images**: Drag & drop to [images.google.com]
+            - **TripAdvisor**: Use their visual search
+            - **Google Lens**: Mobile app for image recognition
+            
+            ### Sample Descriptions:
+            - "This is the Taj Mahal in Agra, India - a white marble mausoleum"
+            - "I see the Eiffel Tower in Paris with cityscape in background"
+            - "Beautiful beach with palm trees, likely in Thailand or Maldives"
             """)
-        
-        # Quick examples
-        with st.expander("🎯 Try These Examples"):
-            st.markdown("""
-            **Test with these famous landmarks (save images from web and upload):**
-            
-            1. **Taj Mahal, India** - White marble mausoleum
-            2. **Eiffel Tower, Paris** - Iron lattice tower
-            3. **Great Wall of China** - Stone fortification
-            4. **Colosseum, Rome** - Ancient amphitheater
-            5. **Statue of Liberty, NYC** - Copper statue
-            
-            **Natural Wonders:**
-            1. **Grand Canyon, USA** - Red rock formations
-            2. **Northern Lights** - Aurora in sky
-            3. **Mount Everest** - Snow-capped peak
-            4. **Great Barrier Reef** - Coral reef underwater
-            
-            *Note: Upload saved images of these places to test the system.*
-            """)
-        
-        # Footer note
-        st.markdown("---")
-        st.caption("ℹ️ Powered by Google Gemini Vision AI. Analysis quality depends on image clarity and landmark popularity.")
 # -------------------------
 # PAGE: API Management
 # -------------------------
