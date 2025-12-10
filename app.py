@@ -607,7 +607,7 @@ def get_amadeus_token():
         return None
 
 def search_hotel_offers_amadeus(city_code: str, check_in: str, check_out: str, guests: int = 2):
-    """Search for hotel offers using Amadeus API - SIMPLIFIED VERSION"""
+    """Search for hotel offers using Amadeus API - UPDATED VERSION"""
     try:
         # 1. Get access token
         token = get_amadeus_token()
@@ -616,59 +616,145 @@ def search_hotel_offers_amadeus(city_code: str, check_in: str, check_out: str, g
         
         headers = {"Authorization": f"Bearer {token}"}
         
-        # 2. Use v2 endpoint (most reliable for free tier)
-        url = "https://test.api.amadeus.com/v2/shopping/hotel-offers"
+        # 2. Try different endpoints in order
+        endpoints = [
+            # Try v1 endpoint first (most common in free tier)
+            ("v1_by_city", "https://test.api.amadeus.com/v1/shopping/hotel-offers/by-city"),
+            # Then v3
+            ("v3", "https://test.api.amadeus.com/v3/shopping/hotel-offers"),
+            # Then v2
+            ("v2", "https://test.api.amadeus.com/v2/shopping/hotel-offers"),
+            # Finally v1 regular
+            ("v1", "https://test.api.amadeus.com/v1/shopping/hotel-offers"),
+        ]
         
-        # 3. SIMPLE parameters only
-        params = {
-            "cityCode": city_code.upper(),  # Ensure uppercase
-            "checkInDate": check_in,
-            "checkOutDate": check_out,
-            "adults": guests,
-            "roomQuantity": 1,
-            "max": 10  # Limit results
-        }
-        
-        # 4. Make the request
-        response = secure_requests_get(url, headers=headers, params=params, api_name="Amadeus_Hotels", timeout=15)
-        
-        # 5. Handle response
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Log for debugging
-            logger.info(f"Hotel search successful for {city_code}")
-            if data.get('data'):
-                logger.info(f"Found {len(data['data'])} hotels")
-            else:
-                logger.warning("No hotels found in response")
-                
-            return data
-            
-        elif response.status_code == 400:
-            # Parse the error
+        for endpoint_name, url in endpoints:
             try:
-                error_data = response.json()
-                logger.error(f"Hotel API 400 error: {error_data}")
-                
-                # Common 400 errors and fixes:
-                if "cityCode" in str(error_data):
-                    return {"error": f"Invalid city code '{city_code}'. Try a different city or use airport code."}
-                elif "date" in str(error_data):
-                    return {"error": "Invalid date format or dates in the past. Use future dates."}
+                # Different parameters for different endpoints
+                if endpoint_name == "v1_by_city":
+                    params = {
+                        "cityCode": city_code.upper(),
+                        "checkInDate": check_in,
+                        "checkOutDate": check_out,
+                        "adults": guests,
+                        "roomQuantity": 1,
+                        "radius": 5,
+                        "radiusUnit": "KM",
+                        "bestRateOnly": "true",
+                        "lang": "EN"
+                    }
                 else:
-                    return {"error": f"API error: {error_data}"}
-                    
-            except:
-                return {"error": f"API error 400: {response.text}"}
+                    params = {
+                        "cityCode": city_code.upper(),
+                        "checkInDate": check_in,
+                        "checkOutDate": check_out,
+                        "adults": guests,
+                        "roomQuantity": 1,
+                        "max": 10
+                    }
                 
-        else:
-            logger.error(f"Hotel API error {response.status_code}: {response.text}")
-            return {"error": f"API error: {response.status_code}"}
+                logger.info(f"Trying hotel endpoint {endpoint_name} ({url})")
+                
+                response = requests.get(url, headers=headers, params=params, timeout=15)
+                
+                logger.info(f"Endpoint {endpoint_name}: Status {response.status_code}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Log for debugging
+                    logger.info(f"✅ Hotel search successful using {endpoint_name}")
+                    if data.get('data'):
+                        logger.info(f"Found {len(data['data'])} hotels")
+                        return data
+                    else:
+                        logger.warning(f"No hotels found via {endpoint_name}")
+                        # Try next endpoint
+                        continue
+                        
+                elif response.status_code == 404:
+                    logger.warning(f"Endpoint {endpoint_name} not found (404)")
+                    continue  # Try next endpoint
+                    
+                elif response.status_code == 400:
+                    # Try a different parameter format
+                    if endpoint_name in ["v1", "v2", "v3"]:
+                        # Try using hotelIds instead
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Endpoint {endpoint_name} failed: {e}")
+                continue
+        
+        # If all endpoints failed, return error with suggestions
+        return {
+            "error": "All hotel endpoints failed. This could mean:",
+            "suggestions": [
+                "1. Hotel search might not be included in your Amadeus plan",
+                "2. Try using major city codes: PAR (Paris), NYC (New York), LON (London)",
+                "3. The Amadeus test environment might have limited hotel data",
+                "4. Try the geolocation-based search instead"
+            ],
+            "debug_info": {
+                "city_code": city_code,
+                "check_in": check_in,
+                "check_out": check_out,
+                "guests": guests
+            }
+        }
             
     except Exception as e:
         logger.error(f"Hotel search error: {e}")
         return {"error": f"Hotel search failed: {str(e)}"}
+def search_hotels_alternative(city_code: str, check_in: str, check_out: str, guests: int = 2):
+    """Alternative hotel search using different approach"""
+    try:
+        token = get_amadeus_token()
+        if not token:
+            return {"error": "Failed to authenticate with Amadeus API"}
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Step 1: First get hotel IDs for the city
+        url_hotel_list = "https://test.api.amadeus.com/v1/reference-data/locations/hotels/by-city"
+        params_list = {
+            "cityCode": city_code.upper(),
+            "radius": 20,
+            "radiusUnit": "KM",
+            "hotelSource": "ALL"
+        }
+        
+        logger.info("Getting hotel list...")
+        response_list = requests.get(url_hotel_list, headers=headers, params=params_list, timeout=10)
+        
+        if response_list.status_code == 200:
+            hotel_list = response_list.json()
+            if hotel_list.get('data'):
+                # Extract hotel IDs
+                hotel_ids = [hotel['hotelId'] for hotel in hotel_list['data'][:5]]  # Take first 5
+                
+                if hotel_ids:
+                    # Step 2: Get offers for these hotels
+                    url_offers = "https://test.api.amadeus.com/v3/shopping/hotel-offers"
+                    params_offers = {
+                        "hotelIds": ",".join(hotel_ids),
+                        "checkInDate": check_in,
+                        "checkOutDate": check_out,
+                        "adults": guests,
+                        "roomQuantity": 1
+                    }
+                    
+                    logger.info(f"Getting offers for hotels: {hotel_ids}")
+                    response_offers = requests.get(url_offers, headers=headers, params=params_offers, timeout=15)
+                    
+                    if response_offers.status_code == 200:
+                        return response_offers.json()
+        
+        return {"error": "Could not find hotels using alternative method"}
+        
+    except Exception as e:
+        logger.error(f"Alternative hotel search error: {e}")
+        return {"error": str(e)}
 # Initialize database
 init_database()
 
@@ -1621,6 +1707,41 @@ def debug_hotel_search(city_name: str):
     except Exception as e:
         st.error(f"❌ Debug error: {e}")
         return {"error": str(e)}
+def check_amadeus_hotel_endpoints():
+    """Check which hotel endpoints are available"""
+    try:
+        token = get_amadeus_token()
+        if not token:
+            return {"error": "No token"}
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Test different hotel endpoints
+        endpoints = [
+            ("v1", "https://test.api.amadeus.com/v1/shopping/hotel-offers"),
+            ("v2", "https://test.api.amadeus.com/v2/shopping/hotel-offers"),
+            ("v3", "https://test.api.amadeus.com/v3/shopping/hotel-offers"),
+            ("v1_by_city", "https://test.api.amadeus.com/v1/shopping/hotel-offers/by-city"),
+            ("v2_by_city", "https://test.api.amadeus.com/v2/shopping/hotel-offers/by-city"),
+        ]
+        
+        results = {}
+        for name, url in endpoints:
+            try:
+                # Simple test with minimal params
+                params = {"cityCode": "PAR", "checkInDate": "2025-12-20", "checkOutDate": "2025-12-21"}
+                response = requests.get(url, headers=headers, params=params, timeout=5)
+                results[name] = {
+                    "status": response.status_code,
+                    "exists": response.status_code != 404
+                }
+            except:
+                results[name] = {"status": "error", "exists": False}
+        
+        return results
+        
+    except Exception as e:
+        return {"error": str(e)}
 # -------------------------
 # Streamlit Navigation
 # -------------------------
@@ -2442,186 +2563,84 @@ elif page == "Hotel Booking":
     # Show mock data for testing
             st.warning("Showing sample data for demonstration:")
             hotel_data = get_mock_hotel_data()
-        if st.button("🔍 Search Hotels", type="primary", use_container_width=True):
-            if not city.strip():
-                st.warning("Please enter a city name.")
-            else:
-                with st.spinner(f"Searching hotels in {city}..."):
-                    try:
-                        # Get city code
-                        city_code = get_city_code_amadeus(city)
-                        
-                        if not city_code:
-                            st.error(f"❌ Could not find city '{city}' in Amadeus database.")
-                            st.info("Try being more specific (e.g., 'New York' instead of 'NYC')")
-                        else:
-                            # Format dates
-                            check_in_str = check_in.strftime("%Y-%m-%d")
-                            check_out_str = check_out.strftime("%Y-%m-%d")
-                            
-                            # Search for hotels
-                            st.info(f"📍 Searching hotels in {city} ({city_code})...")
-                            
-                            hotel_data = search_hotel_offers_amadeus(
-                                city_code=city_code,
-                                check_in=check_in_str,
-                                check_out=check_out_str,
-                                guests=guests
-                            )
-                            
-                            if "error" in hotel_data:
-                                st.error(f"❌ Hotel search failed: {hotel_data['error']}")
-                            elif not hotel_data.get('data'):
-                                st.warning(f"No hotels found in {city} for the selected dates.")
-                                st.info("Try different dates or a nearby city.")
-                            else:
-                                hotels = hotel_data['data']
-                                st.success(f"✅ Found {len(hotels)} hotels in {city}")
-                                
-                                # Save search to database
-                                save_hotel_search(city, check_in_str, check_out_str, guests, len(hotels))
-                                
-                                # Display summary
-                                st.subheader(f"🏨 Hotels in {city}")
-                                
-                                # Stats
-                                col_stat1, col_stat2, col_stat3 = st.columns(3)
-                                with col_stat1:
-                                    st.metric("Hotels Found", len(hotels))
-                                with col_stat2:
-                                    avg_price = sum([
-                                        float(hotel.get('offers', [{}])[0].get('price', {}).get('total', 0))
-                                        for hotel in hotels if hotel.get('offers')
-                                    ]) / max(len(hotels), 1)
-                                    st.metric("Avg. Price", f"${avg_price:.2f}")
-                                with col_stat3:
-                                    st.metric("Dates", f"{check_in_str} to {check_out_str}")
-                                
-                                # Display each hotel
-                                for i, hotel in enumerate(hotels[:15]):  # Show first 15
-                                    hotel_info = hotel.get('hotel', {})
-                                    offers = hotel.get('offers', [])
-                                    
-                                    if offers:
-                                        offer = offers[0]
-                                        price_info = offer.get('price', {})
-                                        price = price_info.get('total', 'N/A')
-                                        currency = price_info.get('currency', 'USD')
-                                        
-                                        # Create expander for each hotel
-                                        with st.expander(
-                                            f"🏨 {hotel_info.get('name', 'Hotel')} - ${price} {currency}",
-                                            expanded=(i < 3)  # First 3 expanded
-                                        ):
-                                            # Hotel details in columns
-                                            col_left, col_right = st.columns([3, 1])
-                                            
-                                            with col_left:
-                                                # Hotel name and rating
-                                                st.write(f"**Hotel:** {hotel_info.get('name', 'N/A')}")
-                                                
-                                                # Rating
-                                                if hotel_info.get('rating'):
-                                                    rating = hotel_info['rating']
-                                                    st.write(f"**Rating:** {rating}/5")
-                                                
-                                                # Address
-                                                if hotel_info.get('address'):
-                                                    address = hotel_info['address']
-                                                    lines = address.get('lines', [])
-                                                    if lines:
-                                                        st.write(f"**Address:** {lines[0]}")
-                                                    city_name = address.get('cityName', '')
-                                                    if city_name:
-                                                        st.write(f"**City:** {city_name}")
-                                                
-                                                # Contact
-                                                if hotel_info.get('contact'):
-                                                    contact = hotel_info['contact']
-                                                    if contact.get('phone'):
-                                                        st.write(f"**Phone:** {contact['phone']}")
-                                            
-                                            with col_right:
-                                                # Price and actions
-                                                st.write(f"**Price:** ${price} {currency}")
-                                                st.write(f"**For:** {guests} guests, {rooms} room(s)")
-                                                
-                                                # Quick actions
-                                                if st.button("💾 Save", key=f"save_{i}", use_container_width=True):
-                                                    save_hotel_favorite(
-                                                        hotel_info.get('name', 'Hotel'),
-                                                        city,
-                                                        float(price) if price != 'N/A' else 0,
-                                                        currency
-                                                    )
-                                                    st.success("Hotel saved to favorites!")
-                                            
-                                            # Hotel description
-                                            if hotel_info.get('description'):
-                                                st.markdown("**Description:**")
-                                                st.write(hotel_info['description']['text'][:300] + "...")
-                                            
-                                            # Additional details
-                                            with st.expander("📋 More Details"):
-                                                col_d1, col_d2 = st.columns(2)
-                                                
-                                                with col_d1:
-                                                    # Amenities
-                                                    st.write("**Amenities:**")
-                                                    amenities = hotel_info.get('amenities', [])
-                                                    if amenities:
-                                                        for amenity in amenities[:10]:
-                                                            st.write(f"• {amenity}")
-                                                    else:
-                                                        st.write("No amenities listed")
-                                                
-                                                with col_d2:
-                                                    # Booking info
-                                                    st.write("**Booking Info:**")
-                                                    if offer.get('guests'):
-                                                        st.write(f"Guests: {offer['guests'].get('adults', guests)} adults")
-                                                    if offer.get('room'):
-                                                        st.write(f"Room Type: {offer['room'].get('typeEstimated', {}).get('category', 'Standard')}")
-                                                    st.write(f"Check-in: After {hotel_info.get('checkIn', {}).get('time', '14:00')}")
-                                                    st.write(f"Check-out: Before {hotel_info.get('checkOut', {}).get('time', '12:00')}")
-                                            
-                                            # Action buttons
-                                            st.markdown("---")
-                                            action_cols = st.columns(4)
-                                            
-                                            with action_cols[0]:
-                                                if st.button("📅 Book Now", key=f"book_{i}", use_container_width=True):
-                                                    st.info("In a real implementation, this would redirect to booking site")
-                                            
-                                            with action_cols[1]:
-                                                if st.button("📍 View on Map", key=f"map_{i}", use_container_width=True):
-                                                    address = hotel_info.get('address', {})
-                                                    if address.get('lines'):
-                                                        location = f"{city} {address['lines'][0]}".replace(' ', '+')
-                                                        st.markdown(f"[Open in Google Maps](https://www.google.com/maps/search/{location})")
-                                            
-                                            with action_cols[2]:
-                                                if st.button("📸 View Photos", key=f"photos_{i}", use_container_width=True):
-                                                    st.info("Hotel photos would appear here")
-                                            
-                                            with action_cols[3]:
-                                                if st.button("💰 Price Alert", key=f"alert_{i}", use_container_width=True):
-                                                    st.success(f"Price alert set for ${price}!")
-                                    
-                                    st.markdown("---")  # Separator between hotels
-                                
-                                # Download results
-                                st.download_button(
-                                    label="📥 Download Hotel List",
-                                    data=json.dumps([h.get('hotel', {}) for h in hotels], indent=2),
-                                    file_name=f"hotels_{city}_{check_in_str}.json",
-                                    mime="application/json"
-                                )
+        # In your Hotel Booking page, update the search section:
+
+if st.button("🔍 Search Hotels", type="primary", use_container_width=True):
+    if not city.strip():
+        st.warning("Please enter a city name.")
+    else:
+        with st.spinner(f"Searching hotels in {city}..."):
+            try:
+                # Get city code
+                city_code = get_city_code_amadeus(city)
+                
+                if not city_code:
+                    st.error(f"❌ Could not find city '{city}' in Amadeus database.")
+                    # Try using the first 3 letters as airport code
+                    city_code = city[:3].upper()
+                    st.info(f"Trying with code: {city_code}")
+                
+                # Format dates
+                check_in_str = check_in.strftime("%Y-%m-%d")
+                check_out_str = check_out.strftime("%Y-%m-%d")
+                
+                # Try multiple approaches
+                approaches = [
+                    ("Main API", lambda: search_hotel_offers_amadeus(city_code, check_in_str, check_out_str, guests)),
+                    ("Alternative", lambda: search_hotels_alternative(city_code, check_in_str, check_out_str, guests))
+                ]
+                
+                hotel_data = None
+                last_error = None
+                
+                for approach_name, search_func in approaches:
+                    st.info(f"Trying {approach_name} approach...")
+                    hotel_data = search_func()
                     
-                    except Exception as e:
-                        st.error(f"❌ Hotel search error: {str(e)}")
-                        logger.exception("Hotel search failed")
-    
+                    if "error" not in hotel_data and hotel_data.get('data'):
+                        st.success(f"✅ Found hotels using {approach_name}!")
+                        break
+                    else:
+                        last_error = hotel_data.get('error', 'Unknown error')
+                        continue
+                
+                # If all approaches failed
+                if not hotel_data or "error" in hotel_data or not hotel_data.get('data'):
+                    st.error(f"❌ Hotel search failed: {last_error}")
+                    
+                    # Show troubleshooting tips
+                    with st.expander("💡 Troubleshooting Tips"):
+                        st.markdown("""
+                        **Common Solutions:**
+                        1. **Try major cities only:** Paris, New York, London, Tokyo
+                        2. **Use airport codes:** DEL, BOM, LHR, JFK
+                        3. **Hotel API might not be in your plan:** Check Amadeus dashboard
+                        4. **Dates might be unavailable:** Try different dates
+                        
+                        **Quick test:**
+                        """)
+                        
+                        # Quick test with known working cities
+                        test_cities = ["PAR", "NYC", "LON", "TYO"]
+                        cols = st.columns(len(test_cities))
+                        for idx, test_city in enumerate(test_cities):
+                            with cols[idx]:
+                                if st.button(test_city, key=f"test_{test_city}"):
+                                    # Retry with this city
+                                    st.session_state.hotel_search_city = test_city
+                                    st.rerun()
+                    
+                    # Fallback to mock data
+                    st.warning("Showing sample hotels for demonstration:")
+                    hotel_data = get_mock_hotel_data(city)
+                
+                # Process and display hotels (your existing display code)
+                hotels = hotel_data['data']
+                # ... [rest of your display code] ...
+                
+            except Exception as e:
+                st.error(f"❌ Hotel search error: {str(e)}")
+                logger.exception("Hotel search failed")
     with tab2:
         st.subheader("💾 Saved Hotels")
         
